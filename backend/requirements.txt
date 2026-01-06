@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+sqlmodel
+pymysql
+python-dotenv
+loguru
+cryptography
+pydantic-settings
+

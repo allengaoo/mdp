@@ -1,0 +1,87 @@
+"""
+Tests for FunctionDefinition API endpoints.
+"""
+import pytest
+from httpx import AsyncClient
+import uuid
+
+
+class TestFunctionDefinitionAPI:
+    """Test cases for /meta/functions endpoints."""
+    
+    @pytest.mark.asyncio
+    async def test_list_functions(self, client: AsyncClient):
+        """Test listing all function definitions."""
+        response = await client.get("/api/v1/meta/functions")
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data, list)
+        print(f"✅ Found {len(data)} functions")
+    
+    @pytest.mark.asyncio
+    async def test_list_functions_with_pagination(self, client: AsyncClient):
+        """Test listing functions with pagination."""
+        response = await client.get("/api/v1/meta/functions", params={"skip": 0, "limit": 5})
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data, list)
+        assert len(data) <= 5
+        print(f"✅ Pagination works, got {len(data)} functions")
+    
+    @pytest.mark.asyncio
+    async def test_get_function_by_id(self, client: AsyncClient):
+        """Test getting a single function by ID."""
+        list_response = await client.get("/api/v1/meta/functions")
+        functions = list_response.json()
+        
+        if functions:
+            func_id = functions[0]["id"]
+            response = await client.get(f"/api/v1/meta/functions/{func_id}")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["id"] == func_id
+            print(f"✅ Got function: {data['display_name']}")
+        else:
+            pytest.skip("No functions available for testing")
+    
+    @pytest.mark.asyncio
+    async def test_function_has_required_fields(self, client: AsyncClient):
+        """Test that function response contains required fields."""
+        list_response = await client.get("/api/v1/meta/functions")
+        functions = list_response.json()
+        
+        if functions:
+            func = functions[0]
+            required_fields = ["id", "api_name", "display_name", "output_type"]
+            for field in required_fields:
+                assert field in func, f"Missing required field: {field}"
+            print(f"✅ Function has all required fields")
+        else:
+            pytest.skip("No functions available for testing")
+    
+    @pytest.mark.asyncio
+    async def test_create_function(self, client: AsyncClient):
+        """Test creating a new function definition."""
+        unique_name = f"test_func_{uuid.uuid4().hex[:8]}"
+        
+        payload = {
+            "api_name": unique_name,
+            "display_name": f"Test Function {unique_name}",
+            "description": "Created by automated test",
+            "code_content": "def test_func():\n    return 'Hello, World!'",
+            "input_params_schema": [
+                {"name": "param1", "type": "STRING", "required": True}
+            ],
+            "output_type": "STRING"
+        }
+        
+        response = await client.post("/api/v1/meta/functions", json=payload)
+        assert response.status_code == 201
+        data = response.json()
+        assert data["api_name"] == unique_name
+        print(f"✅ Created function: {data['display_name']}")
+        
+        # Cleanup
+        delete_response = await client.delete(f"/api/v1/meta/functions/{data['id']}")
+        assert delete_response.status_code == 204
+        print("✅ Cleaned up test function")

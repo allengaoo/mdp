@@ -2,7 +2,7 @@
 Ontology API endpoints for Meta Layer entities.
 """
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlmodel import Session
 
 from app.core.db import get_session
@@ -11,8 +11,9 @@ from app.models.meta import (
     ObjectTypeCreate, ObjectTypeUpdate, ObjectTypeRead,
     LinkTypeCreate, LinkTypeUpdate, LinkTypeRead,
     FunctionDefinitionCreate, FunctionDefinitionUpdate, FunctionDefinitionRead,
-    ActionDefinitionCreate, ActionDefinitionRead,
-    SharedPropertyCreate, SharedPropertyUpdate, SharedPropertyRead
+    ActionDefinitionCreate, ActionDefinitionUpdate, ActionDefinitionRead,
+    SharedPropertyCreate, SharedPropertyUpdate, SharedPropertyRead,
+    ProjectCreate, ProjectRead
 )
 from app.schemas.api_payloads import ObjectTypeRequest, LinkTypeRequest, ProjectResponse
 from app.models.data import (
@@ -64,8 +65,8 @@ def create_object_type(
 
 @router.get("/object-types", response_model=List[ObjectTypeRead])
 def list_object_types(
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
     session: Session = Depends(get_session)
 ):
     """List all ObjectTypes."""
@@ -158,8 +159,8 @@ def create_link_type(
 
 @router.get("/link-types", response_model=List[LinkTypeRead])
 def list_link_types(
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
     session: Session = Depends(get_session)
 ):
     """List all LinkTypes."""
@@ -239,8 +240,8 @@ def create_function_definition(
 
 @router.get("/functions", response_model=List[FunctionDefinitionRead])
 def list_function_definitions(
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
     session: Session = Depends(get_session)
 ):
     """List all FunctionDefinitions."""
@@ -314,8 +315,8 @@ def create_action_definition(
 
 @router.get("/actions", response_model=List[ActionDefinitionRead])
 def list_action_definitions(
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
     session: Session = Depends(get_session)
 ):
     """List all ActionDefinitions."""
@@ -329,6 +330,22 @@ def get_action_definition(
 ):
     """Get ActionDefinition by ID."""
     db_obj = meta_crud.get_action_definition(session, obj_id)
+    if not db_obj:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"ActionDefinition not found: {obj_id}"
+        )
+    return db_obj
+
+
+@router.put("/actions/{obj_id}", response_model=ActionDefinitionRead)
+def update_action_definition(
+    obj_id: str,
+    obj_in: ActionDefinitionUpdate,
+    session: Session = Depends(get_session)
+):
+    """Update an existing ActionDefinition."""
+    db_obj = meta_crud.update_action_definition(session, obj_id, obj_in)
     if not db_obj:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -352,6 +369,54 @@ def delete_action_definition(
     return None
 
 
+# ActionDefinition 别名路由（兼容前端使用的 /action-definitions）
+@router.post("/action-definitions", response_model=ActionDefinitionRead, status_code=status.HTTP_201_CREATED, include_in_schema=False)
+def create_action_definition_alias(
+    obj_in: ActionDefinitionCreate,
+    session: Session = Depends(get_session)
+):
+    """Alias for create_action_definition."""
+    return create_action_definition(obj_in, session)
+
+
+@router.get("/action-definitions", response_model=List[ActionDefinitionRead], include_in_schema=False)
+def list_action_definitions_alias(
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
+    session: Session = Depends(get_session)
+):
+    """Alias for list_action_definitions."""
+    return list_action_definitions(skip, limit, session)
+
+
+@router.get("/action-definitions/{obj_id}", response_model=ActionDefinitionRead, include_in_schema=False)
+def get_action_definition_alias(
+    obj_id: str,
+    session: Session = Depends(get_session)
+):
+    """Alias for get_action_definition."""
+    return get_action_definition(obj_id, session)
+
+
+@router.put("/action-definitions/{obj_id}", response_model=ActionDefinitionRead, include_in_schema=False)
+def update_action_definition_alias(
+    obj_id: str,
+    obj_in: ActionDefinitionUpdate,
+    session: Session = Depends(get_session)
+):
+    """Alias for update_action_definition."""
+    return update_action_definition(obj_id, obj_in, session)
+
+
+@router.delete("/action-definitions/{obj_id}", status_code=status.HTTP_204_NO_CONTENT, include_in_schema=False)
+def delete_action_definition_alias(
+    obj_id: str,
+    session: Session = Depends(get_session)
+):
+    """Alias for delete_action_definition."""
+    return delete_action_definition(obj_id, session)
+
+
 # ==========================================
 # SharedProperty Endpoints
 # ==========================================
@@ -373,13 +438,12 @@ def create_shared_property(
 
 @router.get("/shared-properties", response_model=List[SharedPropertyRead])
 def list_shared_properties(
-    project_id: Optional[str] = None,
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
     session: Session = Depends(get_session)
 ):
-    """List all SharedProperties, optionally filtered by project_id."""
-    return meta_crud.list_shared_properties(session, project_id=project_id, skip=skip, limit=limit)
+    """List all SharedProperties."""
+    return meta_crud.list_shared_properties(session, skip=skip, limit=limit)
 
 
 @router.get("/shared-properties/{obj_id}", response_model=SharedPropertyRead)
@@ -455,8 +519,8 @@ def create_datasource_table(
 
 @router.get("/datasource-tables", response_model=List[DataSourceTableRead])
 def list_datasource_tables(
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
     session: Session = Depends(get_session)
 ):
     """List all DataSourceTables."""
@@ -465,8 +529,8 @@ def list_datasource_tables(
 
 @router.get("/datasources", response_model=List[DataSourceTableRead])
 def list_datasources(
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
     session: Session = Depends(get_session)
 ):
     """List all DataSourceTables (alias for /datasource-tables)."""
@@ -524,10 +588,93 @@ def delete_datasource_table(
 
 @router.get("/projects", response_model=List[ProjectResponse])
 def list_projects(
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
     session: Session = Depends(get_session)
 ):
     """List all Projects with aggregated statistics (objectCount, linkCount)."""
     projects_data = meta_crud.list_projects_with_stats(session, skip=skip, limit=limit)
     return [ProjectResponse(**project) for project in projects_data]
+
+
+@router.post("/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
+def create_project(
+    obj_in: ProjectCreate,
+    session: Session = Depends(get_session)
+):
+    """Create a new Project."""
+    try:
+        db_obj = meta_crud.create_project(session, obj_in)
+        return db_obj
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to create Project: {str(e)}"
+        )
+
+
+@router.get("/projects/{obj_id}", response_model=ProjectRead)
+def get_project(
+    obj_id: str,
+    session: Session = Depends(get_session)
+):
+    """Get Project by ID."""
+    db_obj = meta_crud.get_project(session, obj_id)
+    if not db_obj:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project not found: {obj_id}"
+        )
+    return db_obj
+
+
+@router.put("/projects/{obj_id}", response_model=ProjectRead)
+def update_project(
+    obj_id: str,
+    obj_in: ProjectCreate,
+    session: Session = Depends(get_session)
+):
+    """Update an existing Project."""
+    try:
+        db_obj = meta_crud.update_project(session, obj_id, obj_in)
+        if not db_obj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found: {obj_id}"
+            )
+        return db_obj
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to update Project: {str(e)}"
+        )
+
+
+@router.delete("/projects/{obj_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_project(
+    obj_id: str,
+    session: Session = Depends(get_session)
+):
+    """Delete Project by ID."""
+    try:
+        success = meta_crud.delete_project(session, obj_id)
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found: {obj_id}"
+            )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )

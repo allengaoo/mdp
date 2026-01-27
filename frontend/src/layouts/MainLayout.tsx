@@ -1,13 +1,7 @@
 import { Layout, Menu } from 'antd';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import type { MenuProps } from 'antd';
-import {
-  DatabaseOutlined,
-  FolderOutlined,
-  RocketOutlined,
-  AppstoreOutlined,
-} from '@ant-design/icons';
-
+import {  DatabaseOutlined,  FolderOutlined,  PropertySafetyOutlined,  ApiOutlined,  NodeIndexOutlined,  ApartmentOutlined,  ThunderboltOutlined,  LinkOutlined,  CloudSyncOutlined,  DashboardOutlined,  SearchOutlined,  ShareAltOutlined,  UserOutlined,  RobotOutlined,} from '@ant-design/icons';
 const { Sider, Content } = Layout;
 
 const MainLayout = () => {
@@ -15,25 +9,105 @@ const MainLayout = () => {
   const location = useLocation();
 
   const menuItems: MenuProps['items'] = [
+    // ==========================================
+    // Group 1: 构建与定义
+    // ==========================================
     {
-      key: 'ontology',
-      icon: <DatabaseOutlined />,
-      label: '本体管理 (Ontology Management)',
+      key: 'group-build',
+      label: '构建与定义',
+      type: 'group',
       children: [
+        // SubMenu: 本体管理
         {
-          key: '/oma/library',
-          icon: <FolderOutlined />,
-          label: '本体库 (Library)',
-        },
-        {
-          key: 'example-apps',
-          icon: <AppstoreOutlined />,
-          label: '示例应用 (Apps)',
+          key: 'ontology',
+          icon: <DatabaseOutlined />,
+          label: '本体管理',
           children: [
             {
-              key: '/apps/battlefield',
-              icon: <RocketOutlined />,
-              label: '战场态势 (Battlefield)',
+              key: '/oma/library',
+              icon: <FolderOutlined />,
+              label: '本体场景库',
+            },
+            {
+              key: '/oma/objects',
+              icon: <NodeIndexOutlined />,
+              label: '对象中心',
+            },
+            {
+              key: '/oma/shared-properties',
+              icon: <PropertySafetyOutlined />,
+              label: '公共属性',
+            },
+            {
+              key: '/oma/relations',
+              icon: <ApartmentOutlined />,
+              label: '关系图谱',
+            },
+            {
+              key: '/oma/actions',
+              icon: <ThunderboltOutlined />,
+              label: '行为与逻辑',
+            },
+          ],
+        },
+        // SubMenu: 数据链接
+        {
+          key: 'data-link',
+          icon: <LinkOutlined />,
+          label: '数据链接',
+          children: [
+            {
+              key: '/data/connectors',
+              icon: <ApiOutlined />,
+              label: '连接器管理',
+            },
+            {
+              key: '/data/mapping',
+              icon: <CloudSyncOutlined />,
+              label: '多模态映射',
+            },
+            {
+              key: '/data/health',
+              icon: <DashboardOutlined />,
+              label: '索引健康度',
+            },
+          ],
+        },
+      ],
+    },
+    // ==========================================
+    // Group 2: 探索与分析
+    // ==========================================
+    {
+      key: 'group-explore',
+      label: '探索与分析',
+      type: 'group',
+      children: [
+        // SubMenu: 洞察与分析
+        {
+          key: 'insight',
+          icon: <SearchOutlined />,
+          label: '洞察与分析',
+          children: [
+            {
+              key: '/explore/search',
+              icon: <SearchOutlined />,
+              label: '全域检索',
+            },
+            {
+              key: '/explore/graph',
+              icon: <ShareAltOutlined />,
+              label: '图谱分析',
+            },
+            {
+              key: '/explore/object360',
+              icon: <UserOutlined />,
+              label: '对象360视图',
+            },
+            {
+              key: '/explore/chat',
+              icon: <RobotOutlined />,
+              label: 'Chat2App',
             },
           ],
         },
@@ -47,24 +121,13 @@ const MainLayout = () => {
 
   // Get selected keys based on current location
   const getSelectedKeys = () => {
-    if (location.pathname.startsWith('/oma/library')) {
-      return ['/oma/library'];
-    }
-    if (location.pathname.startsWith('/apps/battlefield')) {
-      return ['/apps/battlefield'];
-    }
-    return [];
+    // 直接使用当前路径作为选中 key
+    return [location.pathname];
   };
 
   const getOpenKeys = () => {
-    const keys: string[] = [];
-    if (location.pathname.startsWith('/oma') || location.pathname.startsWith('/apps')) {
-      keys.push('ontology');
-    }
-    if (location.pathname.startsWith('/apps')) {
-      keys.push('example-apps');
-    }
-    return keys;
+    // 默认展开所有子菜单
+    return ['ontology', 'data-link', 'insight'];
   };
 
   return (

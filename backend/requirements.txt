@@ -7,3 +7,12 @@ loguru
 cryptography
 pydantic-settings
 
+# Vector Store - ChromaDB
+chromadb>=1.0.0
+numpy>=1.24.0
+
+# Data Processing (for sync_worker)
+pandas>=2.0.0
+
+# Elasticsearch - Full Text Search
+elasticsearch>=8.0.0

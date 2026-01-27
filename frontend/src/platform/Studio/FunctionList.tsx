@@ -1,5 +1,8 @@
 /**
  * Function Definition List View component.
+ * 
+ * @todo V3 Migration: This component still uses V1 API.
+ * Migrate to V3 when backend Function endpoints are implemented.
  */
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Space, Tag, Modal, message, Typography } from 'antd';
@@ -55,8 +58,7 @@ const FunctionList: React.FC = () => {
       setData(response.data || []);
     } catch (error: any) {
       message.error(error.response?.data?.detail || 'Failed to fetch function definitions');
-      // Fallback to mock data
-      setData(MOCK_FUNCTIONS);
+      setData([]);
     } finally {
       setLoading(false);
     }
@@ -240,28 +242,5 @@ const FunctionList: React.FC = () => {
     </div>
   );
 };
-
-// Mock data for fallback
-const MOCK_FUNCTIONS: FunctionDefinitionData[] = [
-  {
-    id: '1',
-    api_name: 'calc_strike',
-    display_name: 'Calculate Strike Damage',
-    description: 'Calculate damage output based on weapon type and target characteristics',
-    output_type: 'INTEGER',
-    input_params_schema: [
-      { name: 'weapon_type', type: 'string', required: true },
-      { name: 'target_type', type: 'string', required: true },
-    ],
-  },
-  {
-    id: '2',
-    api_name: 'check_fuel',
-    display_name: 'Check Fighter Fuel Level',
-    description: 'Check current fuel level and return status indicator',
-    output_type: 'OBJECT',
-    input_params_schema: [{ name: 'fighter_id', type: 'string', required: true }],
-  },
-];
 
 export default FunctionList;

@@ -1,8 +1,10 @@
 /**
  * Link Type Creation Wizard component.
  * Dynamic steps based on Cardinality (2 steps for 1:1/1:N, 3 steps for N:N).
+ * 
+ * @note V3 Migration: Now uses V3 API for create operations.
  */
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Modal,
   Steps,
@@ -15,10 +17,12 @@ import {
   Space,
   Switch,
   message,
+  Spin,
 } from 'antd';
 import { ArrowRightOutlined } from '@ant-design/icons';
-import apiClient from '../../api/axios';
+import { createLinkType } from '../../api/v3/ontology';
 import { useParams } from 'react-router-dom';
+import { fetchObjectTypes, fetchDatasources } from '../../api/ontology';
 
 const { Step } = Steps;
 const { TextArea } = Input;
@@ -53,77 +57,6 @@ interface LinkTypeWizardProps {
   onSuccess: () => void;
 }
 
-// Mock Object Types
-const MOCK_OBJECTS: ObjectType[] = [
-  {
-    id: '10000000-0000-0000-0000-000000000001',
-    api_name: 'fighter',
-    display_name: 'Fighter',
-    property_schema: { id: 'string', callsign: 'string', fuel: 'number' },
-  },
-  {
-    id: '10000000-0000-0000-0000-000000000002',
-    api_name: 'target',
-    display_name: 'Target',
-    property_schema: { id: 'string', name: 'string', threat_level: 'string' },
-  },
-  {
-    id: '10000000-0000-0000-0000-000000000003',
-    api_name: 'mission',
-    display_name: 'Mission',
-    property_schema: { id: 'string', name: 'string', status: 'string' },
-  },
-  {
-    id: '10000000-0000-0000-0000-000000000004',
-    api_name: 'intel',
-    display_name: 'Intelligence',
-    property_schema: { id: 'string', source: 'string', content: 'string' },
-  },
-  {
-    id: '10000000-0000-0000-0000-000000000005',
-    api_name: 'base',
-    display_name: 'Base',
-    property_schema: { id: 'string', name: 'string', location: 'string' },
-  },
-];
-
-// Mock Raw Tables
-const MOCK_RAW_TABLES: RawTable[] = [
-  {
-    id: 'table_001',
-    table_name: 'mission_assignments',
-    db_type: 'MySQL',
-    columns_schema: [
-      { name: 'fighter_id', type: 'varchar' },
-      { name: 'mission_id', type: 'varchar' },
-      { name: 'role', type: 'varchar' },
-      { name: 'assigned_at', type: 'datetime' },
-    ],
-  },
-  {
-    id: 'table_002',
-    table_name: 'intel_target_join',
-    db_type: 'MySQL',
-    columns_schema: [
-      { name: 'intel_id', type: 'varchar' },
-      { name: 'target_id', type: 'varchar' },
-      { name: 'relevance', type: 'varchar' },
-      { name: 'updated_at', type: 'datetime' },
-    ],
-  },
-  {
-    id: 'table_003',
-    table_name: 'fighter_base_station',
-    db_type: 'MySQL',
-    columns_schema: [
-      { name: 'fighter_id', type: 'varchar' },
-      { name: 'base_id', type: 'varchar' },
-      { name: 'assigned_date', type: 'date' },
-      { name: 'status', type: 'varchar' },
-    ],
-  },
-];
-
 const CARDINALITY_OPTIONS = [
   { value: 'ONE_TO_ONE', label: '1:1' },
   { value: 'ONE_TO_MANY', label: '1:N' },
@@ -149,6 +82,65 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
   const [selectedJoinTable, setSelectedJoinTable] = useState<RawTable | null>(null);
   const [linkProperties, setLinkProperties] = useState<LinkPropertyMapping[]>([]);
   const [loading, setLoading] = useState(false);
+  
+  // API data state
+  const [objectTypes, setObjectTypes] = useState<ObjectType[]>([]);
+  const [rawTables, setRawTables] = useState<RawTable[]>([]);
+  const [dataLoading, setDataLoading] = useState(false);
+  const [dataError, setDataError] = useState<string | null>(null);
+
+  // Load object types and datasources when wizard opens
+  useEffect(() => {
+    if (visible) {
+      loadData();
+    }
+  }, [visible, projectId]);
+
+  const loadData = async () => {
+    setDataLoading(true);
+    setDataError(null);
+    
+    try {
+      const [objectTypesData, datasourcesData] = await Promise.all([
+        fetchObjectTypes(projectId),
+        fetchDatasources(),
+      ]);
+      
+      // Convert to component's interface format
+      const convertedObjectTypes: ObjectType[] = objectTypesData.map((ot) => ({
+        id: ot.id,
+        api_name: ot.api_name,
+        display_name: ot.display_name,
+        property_schema: ot.property_schema as Record<string, string> | undefined,
+      }));
+      
+      // Parse columns_schema if it's a string
+      const convertedTables: RawTable[] = datasourcesData.map((ds) => {
+        let columnsSchema = ds.columns_schema;
+        if (typeof columnsSchema === 'string') {
+          try {
+            columnsSchema = JSON.parse(columnsSchema);
+          } catch {
+            columnsSchema = [];
+          }
+        }
+        return {
+          id: ds.id,
+          table_name: ds.table_name,
+          db_type: ds.db_type,
+          columns_schema: Array.isArray(columnsSchema) ? columnsSchema : [],
+        };
+      });
+      
+      setObjectTypes(convertedObjectTypes);
+      setRawTables(convertedTables);
+    } catch (error) {
+      console.error('Failed to load data:', error);
+      setDataError('加载数据失败，请检查网络连接后重试');
+    } finally {
+      setDataLoading(false);
+    }
+  };
 
   // Calculate total steps based on cardinality
   const totalSteps = cardinality === 'MANY_TO_MANY' ? 3 : 2;
@@ -180,13 +172,13 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
   // Get source object type
   const getSourceObjectType = (): ObjectType | undefined => {
     const sourceTypeId = form.getFieldValue('source_type_id');
-    return MOCK_OBJECTS.find((ot) => ot.id === sourceTypeId);
+    return objectTypes.find((ot) => ot.id === sourceTypeId);
   };
 
   // Get target object type
   const getTargetObjectType = (): ObjectType | undefined => {
     const targetTypeId = form.getFieldValue('target_type_id');
-    return MOCK_OBJECTS.find((ot) => ot.id === targetTypeId);
+    return objectTypes.find((ot) => ot.id === targetTypeId);
   };
 
   // Get object properties (for FK mapping)
@@ -199,7 +191,7 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
 
   // Handle join table selection
   const handleJoinTableSelect = (tableId: string) => {
-    const table = MOCK_RAW_TABLES.find((t) => t.id === tableId);
+    const table = rawTables.find((t) => t.id === tableId);
     setSelectedJoinTable(table || null);
     
     if (table) {
@@ -307,7 +299,7 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
     setCurrentStep(currentStep - 1);
   };
 
-  // Handle create
+  // Handle create (using V3 API)
   const handleCreate = async () => {
     const isValid = await validateStep();
     if (!isValid) return;
@@ -316,15 +308,18 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
       setLoading(true);
       const values = form.getFieldsValue();
 
-      const payload = {
-        api_name: values.api_name,
-        display_name: values.display_name,
-        source_type_id: values.source_type_id,
-        target_type_id: values.target_type_id,
-        cardinality: cardinality,
-      };
-
-      await apiClient.post('/meta/link-types', payload);
+      // Use V3 API for creation
+      // createLinkType(data, sourceObjectDefId, targetObjectDefId, cardinality, displayName)
+      await createLinkType(
+        {
+          api_name: values.api_name,
+          description: values.description || null,
+        },
+        values.source_type_id,
+        values.target_type_id,
+        cardinality,
+        values.display_name
+      );
       message.success('Link type created successfully');
       onSuccess();
       handleCancel();
@@ -410,94 +405,112 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
       footer={null}
       destroyOnClose
     >
-      <Steps current={currentStep} style={{ marginBottom: 24 }}>
-        <Step title="Definition" />
-        <Step title={isManyToMany ? 'Join Table & Keys' : 'Connection Mapping'} />
-        {isManyToMany && <Step title="Link Properties" />}
-      </Steps>
+      {dataLoading ? (
+        <div style={{ textAlign: 'center', padding: '40px' }}>
+          <Spin size="large" tip="加载数据中..." />
+        </div>
+      ) : dataError ? (
+        <Alert
+          message="加载失败"
+          description={dataError}
+          type="error"
+          showIcon
+          action={
+            <Button size="small" onClick={loadData}>
+              重试
+            </Button>
+          }
+        />
+      ) : (
+        <>
+          <Steps current={currentStep} style={{ marginBottom: 24 }}>
+            <Step title="Definition" />
+            <Step title={isManyToMany ? 'Join Table & Keys' : 'Connection Mapping'} />
+            {isManyToMany && <Step title="Link Properties" />}
+          </Steps>
 
-      {/* Step 1: Definition */}
-      {currentStep === 0 && (
-        <Form form={form} layout="vertical">
-          <Form.Item
-            name="display_name"
-            label="Name"
-            rules={[{ required: true, message: 'Please enter name' }]}
-          >
-            <Input placeholder="e.g., Fighter Participation" onChange={handleDisplayNameChange} />
-          </Form.Item>
-          <Form.Item
-            name="api_name"
-            label="API Identifier"
-            rules={[{ required: true, message: 'Please enter API identifier' }]}
-          >
-            <Input placeholder="e.g., participation" />
-          </Form.Item>
-          <Form.Item name="description" label="Description">
-            <TextArea rows={3} placeholder="Enter description..." />
-          </Form.Item>
-
-          {/* Directional Topology UI */}
-          <Form.Item label="Directional Topology" required>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 16,
-                padding: '16px',
-                background: '#f5f5f5',
-                borderRadius: 8,
-              }}
-            >
+          {/* Step 1: Definition */}
+          {currentStep === 0 && (
+            <Form form={form} layout="vertical">
               <Form.Item
-                name="source_type_id"
-                style={{ flex: 1, marginBottom: 0 }}
-                rules={[{ required: true, message: 'Select source' }]}
+                name="display_name"
+                label="Name"
+                rules={[{ required: true, message: 'Please enter name' }]}
               >
-                <Select placeholder="Source Object" size="large">
-                  {MOCK_OBJECTS.map((ot) => (
-                    <Select.Option key={ot.id} value={ot.id}>
-                      {ot.display_name}
-                    </Select.Option>
-                  ))}
-                </Select>
+                <Input placeholder="e.g., Fighter Participation" onChange={handleDisplayNameChange} />
               </Form.Item>
-              <ArrowRightOutlined style={{ fontSize: 20, color: '#1890ff' }} />
               <Form.Item
-                name="cardinality"
-                style={{ width: 120, marginBottom: 0 }}
-                rules={[{ required: true, message: 'Select' }]}
+                name="api_name"
+                label="API Identifier"
+                rules={[{ required: true, message: 'Please enter API identifier' }]}
               >
-                <Select
-                  placeholder="Cardinality"
-                  size="large"
-                  onChange={handleCardinalityChange}
+                <Input placeholder="e.g., participation" />
+              </Form.Item>
+              <Form.Item name="description" label="Description">
+                <TextArea rows={3} placeholder="Enter description..." />
+              </Form.Item>
+
+              {/* Directional Topology UI */}
+              <Form.Item label="Directional Topology" required>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 16,
+                    padding: '16px',
+                    background: '#f5f5f5',
+                    borderRadius: 8,
+                  }}
                 >
-                  {CARDINALITY_OPTIONS.map((opt) => (
-                    <Select.Option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </Select.Option>
-                  ))}
-                </Select>
+                  <Form.Item
+                    name="source_type_id"
+                    style={{ flex: 1, marginBottom: 0 }}
+                    rules={[{ required: true, message: 'Select source' }]}
+                  >
+                    <Select placeholder="Source Object" size="large">
+                      {objectTypes.map((ot) => (
+                        <Select.Option key={ot.id} value={ot.id}>
+                          {ot.display_name}
+                        </Select.Option>
+                      ))}
+                    </Select>
+                  </Form.Item>
+                  <ArrowRightOutlined style={{ fontSize: 20, color: '#1890ff' }} />
+                  <Form.Item
+                    name="cardinality"
+                    style={{ width: 120, marginBottom: 0 }}
+                    rules={[{ required: true, message: 'Select' }]}
+                  >
+                    <Select
+                      placeholder="Cardinality"
+                      size="large"
+                      onChange={handleCardinalityChange}
+                    >
+                      {CARDINALITY_OPTIONS.map((opt) => (
+                        <Select.Option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </Select.Option>
+                      ))}
+                    </Select>
+                  </Form.Item>
+                  <ArrowRightOutlined style={{ fontSize: 20, color: '#1890ff' }} />
+                  <Form.Item
+                    name="target_type_id"
+                    style={{ flex: 1, marginBottom: 0 }}
+                    rules={[{ required: true, message: 'Select target' }]}
+                  >
+                    <Select placeholder="Target Object" size="large">
+                      {objectTypes.map((ot) => (
+                        <Select.Option key={ot.id} value={ot.id}>
+                          {ot.display_name}
+                        </Select.Option>
+                      ))}
+                    </Select>
+                  </Form.Item>
+                </div>
               </Form.Item>
-              <ArrowRightOutlined style={{ fontSize: 20, color: '#1890ff' }} />
-              <Form.Item
-                name="target_type_id"
-                style={{ flex: 1, marginBottom: 0 }}
-                rules={[{ required: true, message: 'Select target' }]}
-              >
-                <Select placeholder="Target Object" size="large">
-                  {MOCK_OBJECTS.map((ot) => (
-                    <Select.Option key={ot.id} value={ot.id}>
-                      {ot.display_name}
-                    </Select.Option>
-                  ))}
-                </Select>
-              </Form.Item>
-            </div>
-          </Form.Item>
-        </Form>
-      )}
+            </Form>
+          )}
 
       {/* Step 2: Connection Mapping */}
       {currentStep === 1 && (
@@ -563,7 +576,7 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
                   onChange={handleJoinTableSelect}
                   size="large"
                 >
-                  {MOCK_RAW_TABLES.map((table) => (
+                  {rawTables.map((table) => (
                     <Select.Option key={table.id} value={table.id}>
                       {table.table_name} ({table.db_type})
                     </Select.Option>
@@ -639,24 +652,26 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
         </div>
       )}
 
-      {/* Footer Buttons */}
-      <div style={{ marginTop: 24, textAlign: 'right' }}>
-        <Space>
-          {currentStep > 0 && (
-            <Button onClick={handlePrev}>Previous</Button>
-          )}
-          {currentStep < totalSteps - 1 ? (
-            <Button type="primary" onClick={handleNext}>
-              Next
-            </Button>
-          ) : (
-            <Button type="primary" loading={loading} onClick={handleCreate}>
-              Create
-            </Button>
-          )}
-          <Button onClick={handleCancel}>Cancel</Button>
-        </Space>
-      </div>
+          {/* Footer Buttons */}
+          <div style={{ marginTop: 24, textAlign: 'right' }}>
+            <Space>
+              {currentStep > 0 && (
+                <Button onClick={handlePrev}>Previous</Button>
+              )}
+              {currentStep < totalSteps - 1 ? (
+                <Button type="primary" onClick={handleNext}>
+                  Next
+                </Button>
+              ) : (
+                <Button type="primary" loading={loading} onClick={handleCreate}>
+                  Create
+                </Button>
+              )}
+              <Button onClick={handleCancel}>Cancel</Button>
+            </Space>
+          </div>
+        </>
+      )}
     </Modal>
   );
 };

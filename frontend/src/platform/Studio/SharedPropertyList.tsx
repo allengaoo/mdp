@@ -1,22 +1,24 @@
 /**
  * Shared Property List View component.
+ * 
+ * @note V3 Migration: Now uses project-scoped V3 API via fetchProjectSharedProperties
  */
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Space, Tag, Modal, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { EditOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { useParams } from 'react-router-dom';
+import { ISharedProperty } from '../../api/ontology';
+import { fetchProjectSharedProperties } from '../../api/v3/ontology';
+import { adaptSharedPropertiesToV1 } from '../../api/v3/adapters';
 import apiClient from '../../api/axios';
 import SharedPropertyModal from './SharedPropertyModal';
 
-interface SharedPropertyData {
-  id: string;
-  display_name: string;
-  api_name: string;
-  data_type: string;
-  formatter: string | null;
-  description: string | null;
-  created_at: string;
+// Use ISharedProperty from api/ontology.ts
+interface SharedPropertyData extends ISharedProperty {
+  // V3 may not have formatter, make it optional
+  formatter?: string | null;
+  created_at?: string;
 }
 
 const SharedPropertyList: React.FC = () => {
@@ -27,17 +29,19 @@ const SharedPropertyList: React.FC = () => {
   const [modalMode, setModalMode] = useState<'create' | 'edit'>('create');
   const [selectedProperty, setSelectedProperty] = useState<SharedPropertyData | null>(null);
 
-  // Fetch shared properties from API
-  const fetchSharedProperties = async () => {
+  // Fetch shared properties from API (now using project-scoped V3 API)
+  const loadSharedProperties = async () => {
+    if (!projectId) {
+      message.error('Project ID is required');
+      return;
+    }
+    
     try {
       setLoading(true);
-      const response = await apiClient.get('/meta/shared-properties', {
-        params: {
-          project_id: projectId,
-          limit: 100,
-        },
-      });
-      setData(response.data);
+      // Use the project-scoped V3 API to get shared properties used by this project
+      const v3Properties = await fetchProjectSharedProperties(projectId);
+      const properties = adaptSharedPropertiesToV1(v3Properties);
+      setData(properties as SharedPropertyData[]);
     } catch (error: any) {
       message.error(error.response?.data?.detail || 'Failed to fetch shared properties');
     } finally {
@@ -46,7 +50,7 @@ const SharedPropertyList: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchSharedProperties();
+    loadSharedProperties();
   }, [projectId]);
 
   // Handle create
@@ -81,9 +85,10 @@ const SharedPropertyList: React.FC = () => {
       cancelText: 'Cancel',
       onOk: async () => {
         try {
+          // TODO: Migrate to V3 delete API when available
           await apiClient.delete(`/meta/shared-properties/${record.id}`);
           message.success('Shared property deleted successfully');
-          fetchSharedProperties();
+          loadSharedProperties();
         } catch (error: any) {
           message.error(error.response?.data?.detail || 'Failed to delete shared property');
         }
@@ -93,7 +98,7 @@ const SharedPropertyList: React.FC = () => {
 
   // Handle modal success
   const handleModalSuccess = () => {
-    fetchSharedProperties();
+    loadSharedProperties();
   };
 
   const columns: ColumnsType<SharedPropertyData> = [

@@ -22,7 +22,8 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { Card, Typography, Spin, message } from 'antd';
-import { fetchObjectTypes, fetchLinkTypes, IObjectType, ILinkType } from '../../api/ontology';
+import { fetchProjectObjectTypes, fetchProjectLinkTypes } from '../../api/v3/ontology';
+import { IV3ObjectTypeFull, IV3LinkTypeFull } from '../../api/v3/types';
 import { getLayoutedElements } from '../../utils/dagreLayout';
 
 const { Text } = Typography;
@@ -93,15 +94,6 @@ const nodeTypes: NodeTypes = {
   custom: CustomNode,
 };
 
-// Helper function to count properties in property_schema
-const countProperties = (propertySchema?: Record<string, any>): number => {
-  if (!propertySchema) return 0;
-  if (Array.isArray(propertySchema)) {
-    return propertySchema.length;
-  }
-  return Object.keys(propertySchema).length;
-};
-
 const TopologyView: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
   const [nodes, setNodes] = useState<Node<CustomNodeData>[]>([]);
@@ -120,10 +112,10 @@ const TopologyView: React.FC = () => {
       try {
         setLoading(true);
 
-        // Fetch object types and link types in parallel
+        // Fetch object types and link types in parallel (using V3 project-scoped APIs)
         const [objectTypes, linkTypes] = await Promise.all([
-          fetchObjectTypes(projectId),
-          fetchLinkTypes(),
+          fetchProjectObjectTypes(projectId),
+          fetchProjectLinkTypes(projectId),
         ]);
 
         // Create a map of object IDs for quick lookup
@@ -134,8 +126,8 @@ const TopologyView: React.FC = () => {
         console.log('LinkTypes count:', linkTypes.length);
         console.log('Object ID Map:', Array.from(objectIdMap));
 
-        // Transform ObjectTypes to ReactFlow Nodes
-        const transformedNodes: Node<CustomNodeData>[] = objectTypes.map((obj: IObjectType) => {
+        // Transform ObjectTypes to ReactFlow Nodes (using V3 interface)
+        const transformedNodes: Node<CustomNodeData>[] = objectTypes.map((obj: IV3ObjectTypeFull) => {
           const nodeId = obj.id; // Use UUID as node ID
           console.log(`Node ID created: ${nodeId} (from obj.id), Display: ${obj.display_name}, API: ${obj.api_name}`);
           return {
@@ -145,30 +137,29 @@ const TopologyView: React.FC = () => {
             data: {
               label: obj.display_name || obj.api_name,
               icon: '📦', // Default icon, can be customized later
-              propertyCount: countProperties(obj.property_schema),
+              propertyCount: obj.properties?.length || 0, // V3 uses properties array
               status: 'active' as const,
             },
           };
         });
 
-        // Transform LinkTypes to ReactFlow Edges
+        // Transform LinkTypes to ReactFlow Edges (using V3 interface)
         // Only include links where both source and target exist in the current project
         const transformedEdges: Edge[] = linkTypes
-          .filter((link: ILinkType) => {
-            const sourceExists = objectIdMap.has(link.source_type_id);
-            const targetExists = objectIdMap.has(link.target_type_id);
+          .filter((link: IV3LinkTypeFull) => {
+            // V3 uses source_object_def_id and target_object_def_id
+            const sourceExists = link.source_object_def_id && objectIdMap.has(link.source_object_def_id);
+            const targetExists = link.target_object_def_id && objectIdMap.has(link.target_object_def_id);
             console.log(`Link ${link.display_name || link.api_name}:`);
-            console.log(`  - Source ID: ${link.source_type_id}, Exists: ${sourceExists}`);
-            console.log(`  - Target ID: ${link.target_type_id}, Exists: ${targetExists}`);
-            console.log(`  - Edge Source expecting: ${link.source_type_id}`);
-            console.log(`  - Edge Target expecting: ${link.target_type_id}`);
+            console.log(`  - Source ID: ${link.source_object_def_id}, Exists: ${sourceExists}`);
+            console.log(`  - Target ID: ${link.target_object_def_id}, Exists: ${targetExists}`);
             return sourceExists && targetExists;
           })
-          .map((link: ILinkType) => {
+          .map((link: IV3LinkTypeFull) => {
             const edge = {
               id: `edge-${link.id}`,
-              source: link.source_type_id, // Use UUID from source_type_id
-              target: link.target_type_id, // Use UUID from target_type_id
+              source: link.source_object_def_id!, // Use UUID from source_object_def_id
+              target: link.target_object_def_id!, // Use UUID from target_object_def_id
               label: link.display_name || link.api_name,
               type: 'smoothstep',
               animated: false,

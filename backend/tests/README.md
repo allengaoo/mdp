@@ -53,7 +53,7 @@ backend/tests/
 | `test_action_runner.py` | 15 | 动作执行引擎 |
 | **小计** | **37** | |
 
-### 新增测试
+### 代码执行测试
 
 | 测试文件 | 测试数量 | 描述 |
 |---------|---------|------|
@@ -62,13 +62,22 @@ backend/tests/
 | `test_runtime_context.py` | 20+ | 运行时上下文测试 |
 | `test_code_executor.py` | 30+ | 代码执行引擎测试 |
 
+### Chat2App 测试 (V3.1 新增)
+
+| 测试文件 | 测试数量 | 描述 |
+|---------|---------|------|
+| `test_sql_runner.py` | 16 | SQL 安全层验证测试 |
+| `test_chat_models.py` | 15 | Chat2App 数据模型测试 |
+| `test_chat_api.py` | 8 | Chat2App API 端点测试 |
+| **小计** | **39** | |
+
 ### 总计
 
 | 类型 | 数量 |
 |-----|------|
-| API 集成测试 | 66+ |
-| 单元测试 | 67+ |
-| **总计** | **133+** |
+| API 集成测试 | 74+ |
+| 单元测试 | 106+ |
+| **总计** | **180+** |
 
 ## 运行测试
 
@@ -107,6 +116,12 @@ py -m pytest tests/test_schemas.py tests/test_action_runner.py -v
 
 ```bash
 py -m pytest tests/test_actions.py tests/test_object_types.py tests/test_link_types.py tests/test_projects.py tests/test_functions.py tests/test_shared_properties.py tests/test_datasources.py -v
+```
+
+### 只运行 Chat2App 测试
+
+```bash
+py -m pytest tests/test_sql_runner.py tests/test_chat_models.py tests/test_chat_api.py -v
 ```
 
 ### 生成覆盖率报告
@@ -186,6 +201,32 @@ def test_valid_property_def(self):
   - 有效动作验证
   - 空 action_id 处理
   - 复杂参数验证
+
+### SQL 安全层测试 (`test_sql_runner.py`)
+
+测试 Chat2App SQL 安全验证：
+
+- **有效查询** - SELECT 语句、JOIN、LIMIT
+- **拒绝危险操作** - INSERT、UPDATE、DELETE、DROP、TRUNCATE
+- **SQL 注入防护** - 注释、多语句、SLEEP、BENCHMARK
+
+### Chat 模型测试 (`test_chat_models.py`)
+
+测试 Pydantic 数据模型：
+
+- **ChatMessage** - 消息角色验证
+- **ChatRequest** - 请求验证（消息、上下文、历史）
+- **ChatResponse** - 响应验证（动作、AMIS schema）
+- **AmisSchema** - AMIS 组件 schema
+- **HealthResponse** - 健康检查响应
+
+### Chat API 测试 (`test_chat_api.py`)
+
+测试 Chat2App API 端点：
+
+- **健康检查** - `/api/v3/chat/health`
+- **消息发送** - `/api/v3/chat/message`
+- **示例获取** - `/api/v3/chat/schema-example`
 
 ## 编写测试指南
 

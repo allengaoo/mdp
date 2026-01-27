@@ -1,6 +1,9 @@
 /**
  * Function Definition Wizard component.
  * 3-step wizard for creating new function definitions.
+ * 
+ * @todo V3 Migration: This component still uses V1 API.
+ * Migrate to V3 when backend Function endpoints are implemented.
  */
 import React, { useState, useEffect } from 'react';
 import {
@@ -53,6 +56,7 @@ const FunctionWizard: React.FC<FunctionWizardProps> = ({ visible, onCancel, onSu
   const [codeContent, setCodeContent] = useState<string>('');
   const [testInputs, setTestInputs] = useState<Record<string, any>>({});
   const [testResult, setTestResult] = useState<string>('');
+  const [testLoading, setTestLoading] = useState(false);
 
   // Generate function stub when parameters or output type change
   useEffect(() => {
@@ -203,17 +207,38 @@ const FunctionWizard: React.FC<FunctionWizardProps> = ({ visible, onCancel, onSu
     setParameters(updated);
   };
 
-  // Handle test run
-  const handleTestRun = () => {
-    // Mock test execution
-    const mockResult = {
-      status: 'success',
-      result: outputType === 'VOID' ? null : `Mock result for ${outputType}`,
-      execution_time_ms: Math.floor(Math.random() * 100) + 10,
-      inputs: testInputs,
-    };
-    setTestResult(JSON.stringify(mockResult, null, 2));
-    message.success('Test run completed (mock)');
+  // Handle test run - Call real API
+  const handleTestRun = async () => {
+    if (!codeContent.trim()) {
+      message.warning('请先编写代码');
+      return;
+    }
+
+    setTestLoading(true);
+    setTestResult('');
+
+    try {
+      const response = await apiClient.post('/execute/code/test', {
+        code: codeContent,
+        params: testInputs,
+        context: {}, // Empty context for testing
+      });
+
+      const result = response.data;
+      setTestResult(JSON.stringify(result, null, 2));
+
+      if (result.success) {
+        message.success(`执行成功 (${result.execution_time_ms || 0}ms)`);
+      } else {
+        message.error(`执行失败: ${result.error || '未知错误'}`);
+      }
+    } catch (error: any) {
+      const errorMsg = error.response?.data?.detail || error.message || '执行失败';
+      setTestResult(JSON.stringify({ success: false, error: errorMsg }, null, 2));
+      message.error(errorMsg);
+    } finally {
+      setTestLoading(false);
+    }
   };
 
   // Auto-generate API name from display name
@@ -440,8 +465,8 @@ const FunctionWizard: React.FC<FunctionWizardProps> = ({ visible, onCancel, onSu
               </div>
 
               <div style={{ marginBottom: 16 }}>
-                <Button type="primary" icon={<PlayCircleOutlined />} onClick={handleTestRun}>
-                  Run
+                <Button type="primary" icon={<PlayCircleOutlined />} onClick={handleTestRun} loading={testLoading}>
+                  {testLoading ? 'Running...' : 'Run'}
                 </Button>
               </div>
 

@@ -1,24 +1,22 @@
 /**
  * Object Type List View component.
+ * 
+ * @note V3 Migration: Now uses V3 project-scoped API for correct filtering.
  */
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Space, Tag, Modal, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { EditOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { useParams } from 'react-router-dom';
+import { fetchProjectObjectTypes } from '../../api/v3/ontology';
+import { IV3ObjectTypeFull } from '../../api/v3/types';
 import apiClient from '../../api/axios';
 import ObjectTypeWizard from './ObjectTypeWizard';
 import ObjectTypeEditor from './ObjectTypeEditor';
 
-interface ObjectTypeData {
-  id: string;
-  api_name: string;
-  display_name: string;
-  description?: string;
-  property_schema?: Record<string, string>;
-  project_id?: string;
-  created_at: string;
-  updated_at: string;
+// Use V3 ObjectTypeFull interface
+interface ObjectTypeData extends IV3ObjectTypeFull {
+  // Add any local extensions if needed
 }
 
 const ObjectTypeList: React.FC = () => {
@@ -29,20 +27,18 @@ const ObjectTypeList: React.FC = () => {
   const [editorVisible, setEditorVisible] = useState(false);
   const [selectedObjectType, setSelectedObjectType] = useState<ObjectTypeData | null>(null);
 
-  // Fetch object types from API
-  const fetchObjectTypes = async () => {
+  // Fetch object types from API (using V3 project-scoped endpoint)
+  const loadObjectTypes = async () => {
+    if (!projectId) {
+      setData([]);
+      return;
+    }
+    
     try {
       setLoading(true);
-      const response = await apiClient.get('/meta/object-types', {
-        params: {
-          limit: 100,
-        },
-      });
-      // Filter by project if projectId is available
-      const filteredData = projectId
-        ? response.data.filter((item: ObjectTypeData) => item.project_id === projectId)
-        : response.data;
-      setData(filteredData);
+      // Use V3 project-scoped API to get only object types bound to this project
+      const objectTypes = await fetchProjectObjectTypes(projectId);
+      setData(objectTypes as ObjectTypeData[]);
     } catch (error: any) {
       message.error(error.response?.data?.detail || 'Failed to fetch object types');
     } finally {
@@ -51,12 +47,12 @@ const ObjectTypeList: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchObjectTypes();
+    loadObjectTypes();
   }, [projectId]);
 
   // Handle create success
   const handleCreateSuccess = () => {
-    fetchObjectTypes();
+    loadObjectTypes();
   };
 
   // Handle edit
@@ -67,7 +63,7 @@ const ObjectTypeList: React.FC = () => {
 
   // Handle edit success
   const handleEditSuccess = () => {
-    fetchObjectTypes();
+    loadObjectTypes();
   };
 
   // Handle delete
@@ -89,9 +85,10 @@ const ObjectTypeList: React.FC = () => {
       cancelText: 'Cancel',
       onOk: async () => {
         try {
+          // TODO: Migrate to V3 delete API when available
           await apiClient.delete(`/meta/object-types/${record.id}`);
           message.success('Object type deleted successfully');
-          fetchObjectTypes();
+          loadObjectTypes();
         } catch (error: any) {
           message.error(error.response?.data?.detail || 'Failed to delete object type');
         }

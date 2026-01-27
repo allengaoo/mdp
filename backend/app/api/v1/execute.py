@@ -163,14 +163,15 @@ def run_action(
         try:
             # Get project_id from action_def or use a default
             project_id = getattr(action_def, 'project_id', None) or "default"
+            # Combine source_id and params into input_params
+            input_params = {"source_id": source_id, **(request.params or {})}
             instance_crud.create_execution_log(
                 session=session,
                 project_id=project_id,
                 action_def_id=action_def.id,
                 execution_status="SUCCESS",
-                source_object_id=source_id,
                 duration_ms=duration_ms,
-                request_params=request.params
+                input_params=input_params
             )
         except Exception as log_error:
             logger.warning(f"Failed to log execution: {log_error}")
@@ -192,15 +193,15 @@ def run_action(
         if action_def:
             try:
                 project_id = getattr(action_def, 'project_id', None) or "default"
+                input_params = {"source_id": source_id, **(request.params or {})}
                 instance_crud.create_execution_log(
                     session=session,
                     project_id=project_id,
                     action_def_id=action_def.id,
                     execution_status="FAILED",
-                    source_object_id=source_id,
                     duration_ms=duration_ms,
                     error_message=str(error_message),
-                    request_params=request.params
+                    input_params=input_params
                 )
             except Exception as log_error:
                 logger.warning(f"Failed to log execution: {log_error}")
@@ -213,15 +214,15 @@ def run_action(
         if action_def:
             try:
                 project_id = getattr(action_def, 'project_id', None) or "default"
+                input_params = {"source_id": source_id, **(request.params or {})}
                 instance_crud.create_execution_log(
                     session=session,
                     project_id=project_id,
                     action_def_id=action_def.id,
                     execution_status="FAILED",
-                    source_object_id=source_id,
                     duration_ms=duration_ms,
                     error_message=error_message,
-                    request_params=request.params
+                    input_params=input_params
                 )
             except Exception as log_error:
                 logger.warning(f"Failed to log execution: {log_error}")
@@ -237,15 +238,15 @@ def run_action(
         if action_def:
             try:
                 project_id = getattr(action_def, 'project_id', None) or "default"
+                input_params = {"source_id": source_id, **(request.params or {})}
                 instance_crud.create_execution_log(
                     session=session,
                     project_id=project_id,
                     action_def_id=action_def.id,
                     execution_status="FAILED",
-                    source_object_id=source_id,
                     duration_ms=duration_ms,
                     error_message=error_message,
-                    request_params=request.params
+                    input_params=input_params
                 )
             except Exception as log_error:
                 logger.warning(f"Failed to log execution: {log_error}")
@@ -261,15 +262,15 @@ def run_action(
         if action_def:
             try:
                 project_id = getattr(action_def, 'project_id', None) or "default"
+                input_params = {"source_id": source_id, **(request.params or {})}
                 instance_crud.create_execution_log(
                     session=session,
                     project_id=project_id,
                     action_def_id=action_def.id,
                     execution_status="FAILED",
-                    source_object_id=source_id,
                     duration_ms=duration_ms,
                     error_message=error_message,
-                    request_params=request.params
+                    input_params=input_params
                 )
             except Exception as log_error:
                 logger.warning(f"Failed to log execution: {log_error}")
@@ -337,11 +338,11 @@ def list_execution_logs(
                 "project_id": log.project_id,
                 "action_id": log.action_def_id,
                 "action_name": action_name or log.action_def_id,
-                "source_object_id": log.source_object_id,
+                "trigger_user_id": log.trigger_user_id,
                 "status": log.execution_status,
                 "duration_ms": log.duration_ms,
                 "error_message": log.error_message,
-                "request_params": log.request_params,
+                "input_params": log.input_params,
                 "created_at": log.created_at.isoformat() if log.created_at else None
             }
             result.append(log_dict)

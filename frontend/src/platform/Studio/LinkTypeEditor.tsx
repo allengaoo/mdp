@@ -1,6 +1,9 @@
 /**
  * Link Type Editor component.
  * Single modal with reactive sections based on Cardinality changes.
+ * 
+ * @note V3 Migration: Read operations use V3 API (via api/ontology.ts adapters).
+ * Update operation still uses V1 API (TODO: migrate when V3 endpoint is available).
  */
 import React, { useState, useEffect } from 'react';
 import {
@@ -16,7 +19,7 @@ import {
   Divider,
 } from 'antd';
 import { useParams } from 'react-router-dom';
-import apiClient from '../../api/axios';
+import apiClient from '../../api/axios'; // TODO: Remove when V3 updateLinkType is available
 import {
   fetchObjectTypes,
   fetchDatasources,
@@ -38,7 +41,7 @@ interface LinkTypeData {
   id: string;
   api_name: string;
   display_name: string;
-  description?: string;
+  description?: string | null;
   source_type_id: string;
   target_type_id: string;
   cardinality: string;

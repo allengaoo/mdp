@@ -35,6 +35,10 @@ backend/logs/
 *.db
 *.sqlite
 
+# Milvus Vector Store
+backend/data/mdp_vector_store.db
+backend/data/*.db
+
 # Node
 node_modules/
 npm-debug.log*

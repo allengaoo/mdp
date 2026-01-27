@@ -74,7 +74,7 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
           setLoadingData(true);
           const [datasourcesData, sharedPropsData] = await Promise.all([
             fetchDatasources(),
-            fetchSharedProperties(projectId),
+            fetchSharedProperties(),
           ]);
           setDatasources(datasourcesData);
           setSharedProperties(sharedPropsData);
@@ -150,29 +150,129 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
     return typeMap[dbType.toLowerCase()] || 'string';
   };
 
-  // Handle CSV upload (mock)
+  // Infer data type from CSV value
+  const inferDataType = (value: string): string => {
+    if (!value || value.trim() === '') return 'varchar';
+    const trimmed = value.trim();
+    
+    // Check for integer
+    if (/^-?\d+$/.test(trimmed)) return 'int';
+    
+    // Check for float/double
+    if (/^-?\d+\.\d+$/.test(trimmed)) return 'decimal';
+    
+    // Check for boolean
+    if (/^(true|false|yes|no|1|0)$/i.test(trimmed)) return 'boolean';
+    
+    // Check for datetime (ISO format or common date formats)
+    if (/^\d{4}-\d{2}-\d{2}(T|\s)\d{2}:\d{2}:\d{2}/.test(trimmed)) return 'datetime';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return 'date';
+    
+    // Default to varchar with estimated length
+    const len = trimmed.length;
+    return len > 255 ? 'text' : 'varchar';
+  };
+
+  // Parse CSV file and extract columns with type inference
+  const parseCSVFile = (file: File): Promise<Array<{ name: string; type: string; length?: number }>> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const text = e.target?.result as string;
+          const lines = text.split(/\r?\n/).filter(line => line.trim());
+          
+          if (lines.length === 0) {
+            reject(new Error('CSV file is empty'));
+            return;
+          }
+
+          // Parse header line
+          const headers = lines[0].split(',').map(h => h.trim().replace(/^["']|["']$/g, ''));
+          
+          // Analyze first few data rows to infer types
+          const sampleRows = lines.slice(1, Math.min(6, lines.length));
+          const columnTypes: Record<string, string[]> = {};
+          
+          headers.forEach(header => {
+            columnTypes[header] = [];
+          });
+
+          sampleRows.forEach(row => {
+            // Simple CSV parsing (handles basic cases, not quoted commas)
+            const values = row.split(',').map(v => v.trim().replace(/^["']|["']$/g, ''));
+            headers.forEach((header, idx) => {
+              if (values[idx] !== undefined) {
+                columnTypes[header].push(inferDataType(values[idx]));
+              }
+            });
+          });
+
+          // Determine final type for each column (most common non-varchar type)
+          const columns = headers.map(header => {
+            const types = columnTypes[header];
+            const typeCounts: Record<string, number> = {};
+            types.forEach(t => {
+              typeCounts[t] = (typeCounts[t] || 0) + 1;
+            });
+            
+            // Find most common type, preferring specific types over varchar
+            let finalType = 'varchar';
+            let maxCount = 0;
+            Object.entries(typeCounts).forEach(([type, count]) => {
+              if (type !== 'varchar' && count >= maxCount) {
+                finalType = type;
+                maxCount = count;
+              }
+            });
+            
+            // If all values are varchar or empty, use varchar
+            if (maxCount === 0) finalType = 'varchar';
+
+            return {
+              name: header.toLowerCase().replace(/[^a-z0-9_]/g, '_'),
+              type: finalType,
+              length: finalType === 'varchar' ? 255 : undefined,
+            };
+          });
+
+          resolve(columns);
+        } catch (err) {
+          reject(err);
+        }
+      };
+      reader.onerror = () => reject(new Error('Failed to read file'));
+      reader.readAsText(file);
+    });
+  };
+
+  // Handle CSV upload - real parsing
   const uploadProps: UploadProps = {
     name: 'file',
     multiple: false,
     accept: '.csv',
-    beforeUpload: (file) => {
-      // Mock: simulate parsing CSV and extracting columns
-      const mockColumns: Array<{ name: string; type: string; length?: number; precision?: number; scale?: number }> = [
-        { name: 'id', type: 'varchar', length: 36 },
-        { name: 'name', type: 'varchar', length: 100 },
-        { name: 'value', type: 'int' },
-        { name: 'created_at', type: 'datetime' },
-      ];
-      setUploadedColumns(mockColumns);
-      setAvailableColumns(mockColumns);
-      const mappings: PropertyMapping[] = mockColumns.map((col: { name: string; type: string }) => ({
-        rawColumn: col.name,
-        propertyName: col.name,
-        type: mapColumnTypeToPropertyType(col.type),
-        useSharedProperty: undefined,
-      }));
-      setPropertyMappings(mappings);
-      message.success(`File ${file.name} uploaded successfully (mock)`);
+    beforeUpload: async (file) => {
+      try {
+        const columns = await parseCSVFile(file);
+        
+        if (columns.length === 0) {
+          message.error('No columns found in CSV file');
+          return false;
+        }
+
+        setUploadedColumns(columns);
+        setAvailableColumns(columns);
+        const mappings: PropertyMapping[] = columns.map((col) => ({
+          rawColumn: col.name,
+          propertyName: col.name,
+          type: mapColumnTypeToPropertyType(col.type),
+          useSharedProperty: undefined,
+        }));
+        setPropertyMappings(mappings);
+        message.success(`成功解析 ${file.name}，检测到 ${columns.length} 个列`);
+      } catch (err: any) {
+        message.error(`解析 CSV 失败: ${err.message || '未知错误'}`);
+      }
       return false; // Prevent actual upload
     },
   };

@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     # Raw Store Database: mdp_raw_store (Synced data storage)
     raw_store_database_url: str = "mysql+pymysql://root:Ga0binGB@localhost:3306/mdp_raw_store"
     
+    # Ontology Raw Data Database: ontology_raw_data (Final destination for raw data)
+    ontology_raw_data_url: str = "mysql+pymysql://root:Ga0binGB@localhost:3306/ontology_raw_data"
+    
     # ==========================================
     # Elasticsearch Configuration
     # ==========================================

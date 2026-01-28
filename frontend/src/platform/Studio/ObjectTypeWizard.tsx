@@ -27,6 +27,10 @@ import {
   IDataSourceTable,
   ISharedProperty,
 } from '../../api/ontology';
+import {
+  fetchTargetTables,
+  ITargetTableInfo,
+} from '../../api/v3/connectors';
 
 const { Step } = Steps;
 const { TextArea } = Input;
@@ -62,22 +66,26 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
   const [loading, setLoading] = useState(false);
   const [datasources, setDatasources] = useState<IDataSourceTable[]>([]);
   const [sharedProperties, setSharedProperties] = useState<ISharedProperty[]>([]);
+  const [targetTables, setTargetTables] = useState<ITargetTableInfo[]>([]);
+  const [selectedTargetTable, setSelectedTargetTable] = useState<ITargetTableInfo | null>(null);
   const [loadingData, setLoadingData] = useState(false);
   // Store form values from Step 1 to ensure they're available when creating
   const [step1Values, setStep1Values] = useState<{ api_name?: string; display_name?: string; description?: string }>({});
 
-  // Fetch datasources and shared properties on mount
+  // Fetch datasources, shared properties, and target tables on mount
   useEffect(() => {
     if (visible) {
       const loadData = async () => {
         try {
           setLoadingData(true);
-          const [datasourcesData, sharedPropsData] = await Promise.all([
+          const [datasourcesData, sharedPropsData, targetTablesData] = await Promise.all([
             fetchDatasources(),
             fetchSharedProperties(),
+            fetchTargetTables(true, false), // include columns, don't require synced
           ]);
           setDatasources(datasourcesData);
           setSharedProperties(sharedPropsData);
+          setTargetTables(targetTablesData.tables || []);
         } catch (error: any) {
           message.error(error.response?.data?.detail || 'Failed to load data');
         } finally {
@@ -120,6 +128,7 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
   // Handle data source selection
   const handleDataSourceSelect = (record: IDataSourceTable) => {
     setSelectedDataSource(record);
+    setSelectedTargetTable(null); // Clear target table selection
     // Parse columns_schema if it's a string
     const columns = Array.isArray(record.columns_schema)
       ? record.columns_schema
@@ -135,6 +144,27 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
       useSharedProperty: undefined,
     }));
     setPropertyMappings(mappings);
+  };
+
+  // Handle target table selection (from sync jobs)
+  const handleTargetTableSelect = (record: ITargetTableInfo) => {
+    setSelectedTargetTable(record);
+    setSelectedDataSource(null); // Clear catalog selection
+    
+    // Use columns from target table
+    const columns = record.columns || [];
+    setAvailableColumns(columns);
+    
+    // Initialize property mappings
+    const mappings: PropertyMapping[] = columns.map((col) => ({
+      rawColumn: col.name,
+      propertyName: col.name,
+      type: mapColumnTypeToPropertyType(col.type),
+      useSharedProperty: undefined,
+    }));
+    setPropertyMappings(mappings);
+    
+    message.success(`已选择目标表: ${record.target_table}`);
   };
 
   // Map database column type to property type
@@ -455,6 +485,7 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
     form.resetFields();
     setCurrentStep(0);
     setSelectedDataSource(null);
+    setSelectedTargetTable(null);
     setAvailableColumns([]);
     setPrimaryKey('');
     setPropertyMappings([]);
@@ -581,23 +612,79 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
         <div>
           <Alert
             message="Data Source Selection"
-            description="The Ontology layer abstracts logical entities from raw data sources. Select a data source or upload a CSV file to define the column structure."
+            description="选择数据源来定义对象类型的列结构。推荐从同步任务的目标表中选择，以确保数据已同步到系统中。"
             type="info"
             showIcon
             style={{ marginBottom: 24 }}
           />
-          <Tabs>
-            <Tabs.TabPane tab="Upload CSV" key="csv">
+          <Tabs defaultActiveKey="sync-tables">
+            <Tabs.TabPane tab="从同步任务选择" key="sync-tables">
+              {loadingData ? (
+                <div style={{ textAlign: 'center', padding: '40px' }}>加载中...</div>
+              ) : targetTables.length === 0 ? (
+                <Alert
+                  message="暂无可用的目标表"
+                  description="请先在连接器管理页面的数据探索中创建同步任务，然后再返回此处选择。"
+                  type="warning"
+                  showIcon
+                />
+              ) : (
+                <Table
+                  columns={[
+                    {
+                      title: '目标表名',
+                      dataIndex: 'target_table',
+                      key: 'target_table',
+                    },
+                    {
+                      title: '连接器',
+                      dataIndex: 'connection_name',
+                      key: 'connection_name',
+                    },
+                    {
+                      title: '同步任务',
+                      dataIndex: 'sync_job_name',
+                      key: 'sync_job_name',
+                    },
+                    {
+                      title: '同步状态',
+                      dataIndex: 'last_sync_status',
+                      key: 'last_sync_status',
+                      render: (status: string | null) => {
+                        if (!status) return <span style={{ color: '#999' }}>未执行</span>;
+                        const color = status === 'SUCCESS' ? 'green' : status === 'FAILED' ? 'red' : 'blue';
+                        return <span style={{ color }}>{status}</span>;
+                      },
+                    },
+                    {
+                      title: '列数',
+                      key: 'columns_count',
+                      render: (_: any, record: ITargetTableInfo) => record.columns?.length || 0,
+                    },
+                  ]}
+                  dataSource={targetTables}
+                  rowKey="target_table"
+                  rowSelection={{
+                    type: 'radio',
+                    selectedRowKeys: selectedTargetTable ? [selectedTargetTable.target_table] : [],
+                    onSelect: (record) => handleTargetTableSelect(record),
+                  }}
+                  pagination={false}
+                  size="small"
+                />
+              )}
+            </Tabs.TabPane>
+            <Tabs.TabPane tab="上传 CSV" key="csv">
               <Dragger {...uploadProps}>
                 <p className="ant-upload-drag-icon">
                   <InboxOutlined />
                 </p>
-                <p className="ant-upload-text">Click or drag file to this area to upload</p>
-                <p className="ant-upload-hint">Support for CSV files only</p>
+                <p className="ant-upload-text">点击或拖拽文件到此处上传</p>
+                <p className="ant-upload-hint">仅支持 CSV 文件</p>
               </Dragger>
               {uploadedColumns.length > 0 && (
                 <div style={{ marginTop: 16 }}>
-                  <p>Detected columns:</p>
+                  <p>检测到的列:</p>
                   <ul>
               {Array.isArray(uploadedColumns) && uploadedColumns.map((col: { name: string; type: string }) => (
                 <li key={col.name}>
@@ -608,9 +695,9 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
                 </div>
               )}
             </Tabs.TabPane>
-            <Tabs.TabPane tab="Select from Catalog" key="catalog">
+            <Tabs.TabPane tab="从数据目录选择" key="catalog">
               {loadingData ? (
-                <div style={{ textAlign: 'center', padding: '40px' }}>Loading datasources...</div>
+                <div style={{ textAlign: 'center', padding: '40px' }}>加载中...</div>
               ) : (
                 <Table
                   columns={datasourceColumns}

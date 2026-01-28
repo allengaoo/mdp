@@ -247,6 +247,18 @@ class SyncJobDefRead(SQLModel):
     updated_at: Optional[datetime]
 
 
+class SyncJobDefCreateResponse(SQLModel):
+    """Response DTO for creating SyncJobDef with warnings."""
+    job: SyncJobDefRead
+    warnings: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "mapping_exists": False,
+            "mapping_table_mismatch": None,
+            "table_exists": False
+        }
+    )
+
+
 class SyncJobDefWithConnection(SyncJobDefRead):
     """DTO for SyncJobDef with connection info."""
     connection_name: Optional[str] = None
@@ -323,3 +335,26 @@ class SourceExplorerResponse(SQLModel):
     tables: List[SourceTableInfo] = []
     schemas: Optional[List[str]] = None
     error: Optional[str] = None
+
+
+# ==========================================
+# DTOs - Target Tables (for Object Type binding)
+# ==========================================
+
+class TargetTableInfo(SQLModel):
+    """DTO for target table info (from sync jobs)."""
+    target_table: str
+    connection_id: str
+    connection_name: str
+    sync_job_id: str
+    sync_job_name: str
+    last_sync_status: Optional[str] = None
+    last_sync_at: Optional[datetime] = None
+    rows_synced: Optional[int] = None
+    columns: Optional[List[Dict[str, Any]]] = None  # Column schema from mdp_raw_store
+
+
+class TargetTableListResponse(SQLModel):
+    """DTO for list of target tables."""
+    tables: List[TargetTableInfo] = []
+    total: int = 0

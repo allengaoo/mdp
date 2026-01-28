@@ -22,9 +22,12 @@ from app.models.system import (
     SyncJobDefUpdate,
     SyncJobDefRead,
     SyncJobDefWithConnection,
+    SyncJobDefCreateResponse,
     # Sync Run Log
     SyncRunLogRead,
     SyncRunLogWithJob,
+    # Target Tables
+    TargetTableListResponse,
 )
 from app.engine.v3 import connector_crud, sync_crud
 
@@ -226,13 +229,32 @@ def list_sync_jobs(
     return sync_crud.list_sync_jobs_with_connection(session, connection_id=connection_id, skip=skip, limit=limit)
 
 
-@sync_router.post("", response_model=SyncJobDefRead, status_code=status.HTTP_201_CREATED)
+@sync_router.get("/target-tables", response_model=TargetTableListResponse)
+def list_target_tables(
+    include_columns: bool = Query(False, description="Include column schema from mdp_raw_store"),
+    only_synced: bool = Query(False, description="Only return tables that have been successfully synced"),
+    session: Session = Depends(get_session)
+):
+    """
+    List all target tables from sync jobs.
+    
+    Use this endpoint to get available data sources for binding to object types.
+    The target tables are created in mdp_raw_store when sync jobs run.
+    """
+    return sync_crud.list_target_tables(session, include_columns=include_columns, only_synced=only_synced)
+
+
+@sync_router.post("", response_model=SyncJobDefCreateResponse, status_code=status.HTTP_201_CREATED)
 def create_sync_job(
     data: SyncJobDefCreate,
     session: Session = Depends(get_session)
 ):
     """
     Create a new sync job definition.
+    
+    Returns warnings if:
+    - Mapping exists for this connection with different table name
+    - Target table does not exist in raw_store (will be created on first sync)
     """
     # Verify connection exists
     conn = connector_crud.get_connection(session, data.connection_id)
@@ -243,8 +265,28 @@ def create_sync_job(
         )
     
     try:
-        return sync_crud.create_sync_job(session, data)
+        job, warnings = sync_crud.create_sync_job(session, data)
+        
+        # Convert to read model
+        job_read = SyncJobDefRead(
+            id=job.id,
+            connection_id=job.connection_id,
+            name=job.name,
+            source_config=job.source_config,
+            target_table=job.target_table,
+            sync_mode=job.sync_mode,
+            schedule_cron=job.schedule_cron,
+            is_enabled=job.is_enabled,
+            last_run_status=job.last_run_status,
+            last_run_at=job.last_run_at,
+            rows_synced=job.rows_synced,
+            created_at=job.created_at,
+            updated_at=job.updated_at,
+        )
+        
+        return SyncJobDefCreateResponse(job=job_read, warnings=warnings)
     except Exception as e:
+        logger.error(f"[SyncJob] Failed to create sync job: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to create sync job: {str(e)}"

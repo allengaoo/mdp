@@ -21,6 +21,65 @@ def _get_raw_store_engine() -> Engine:
     return create_engine(settings.raw_store_database_url, pool_pre_ping=True)
 
 
+def _get_ontology_raw_data_engine() -> Engine:
+    """Get SQLAlchemy engine for ontology_raw_data database."""
+    return create_engine(settings.ontology_raw_data_url, pool_pre_ping=True)
+
+
+def _copy_to_ontology_raw_data(
+    target_table: str,
+    sync_mode: str,
+    chunk_size: int = 10000
+) -> int:
+    """
+    Copy data from mdp_raw_store to ontology_raw_data.
+    
+    Args:
+        target_table: Table name (same in both databases)
+        sync_mode: FULL_OVERWRITE or INCREMENTAL
+        chunk_size: Batch size for reading
+        
+    Returns:
+        Number of rows copied
+    """
+    raw_store_engine = _get_raw_store_engine()
+    ontology_engine = _get_ontology_raw_data_engine()
+    
+    logger.info(f"[SyncWorker] Copying {target_table} from mdp_raw_store to ontology_raw_data...")
+    
+    total_rows = 0
+    first_chunk = True
+    
+    try:
+        # Read from mdp_raw_store in chunks
+        for chunk_df in pd.read_sql(f"SELECT * FROM {target_table}", raw_store_engine, chunksize=chunk_size):
+            # Determine write mode
+            if first_chunk:
+                if_exists = "replace" if sync_mode == "FULL_OVERWRITE" else "append"
+                first_chunk = False
+            else:
+                if_exists = "append"
+            
+            # Write to ontology_raw_data
+            chunk_df.to_sql(
+                name=target_table,
+                con=ontology_engine,
+                if_exists=if_exists,
+                index=False
+            )
+            
+            total_rows += len(chunk_df)
+            logger.info(f"[SyncWorker] Copied {total_rows} rows to ontology_raw_data.{target_table}")
+        
+        logger.info(f"[SyncWorker] Successfully copied {total_rows} rows to ontology_raw_data.{target_table}")
+        
+    finally:
+        raw_store_engine.dispose()
+        ontology_engine.dispose()
+    
+    return total_rows
+
+
 def _get_source_engine(conn_type: str, config: Dict[str, Any]) -> Engine:
     """Get SQLAlchemy engine for source database."""
     conn_string = connector_crud._build_connection_string(conn_type, config)
@@ -165,7 +224,17 @@ def run_sync_job(job_id: str, run_log_id: str):
             
             target_engine.dispose()
             
-            logger.info(f"[SyncWorker] Job {job_id} completed. Rows synced: {rows_affected}")
+            logger.info(f"[SyncWorker] Job {job_id} phase 1 completed. Rows synced to mdp_raw_store: {rows_affected}")
+            
+            # Phase 2: Copy data from mdp_raw_store to ontology_raw_data
+            logger.info(f"[SyncWorker] Starting phase 2: Copy to ontology_raw_data...")
+            rows_copied = _copy_to_ontology_raw_data(
+                target_table=job.target_table,
+                sync_mode=job.sync_mode
+            )
+            logger.info(f"[SyncWorker] Job {job_id} phase 2 completed. Rows copied to ontology_raw_data: {rows_copied}")
+            
+            logger.info(f"[SyncWorker] Job {job_id} fully completed. Total rows: {rows_affected}")
             
     except Exception as e:
         status = "FAILED"

@@ -2,11 +2,13 @@
 Mapping CRUD operations for MDP Platform V3.1
 Tables: ctx_object_mapping_def
 """
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 from sqlmodel import Session, select
+from sqlalchemy import create_engine, text, inspect
 
 from app.core.logger import logger
+from app.core.config import settings
 from app.models.context import (
     ObjectMappingDef,
     ObjectMappingDefCreate,
@@ -82,6 +84,33 @@ def update_mapping(
     return mapping
 
 
+def update_mapping_table_name(
+    session: Session,
+    mapping_id: str,
+    new_table_name: str
+) -> Optional[ObjectMappingDef]:
+    """Update mapping's source_table_name and regenerate mapping_spec if needed."""
+    mapping = session.get(ObjectMappingDef, mapping_id)
+    if not mapping:
+        return None
+    
+    old_table_name = mapping.source_table_name
+    mapping.source_table_name = new_table_name
+    
+    # Regenerate mapping_spec based on new table structure
+    new_mapping_spec = generate_mapping_spec_from_table(new_table_name)
+    if new_mapping_spec.get("nodes"):
+        mapping.mapping_spec = new_mapping_spec
+        logger.info(f"[Mapping] Regenerated mapping_spec for table {new_table_name}")
+    
+    mapping.updated_at = datetime.utcnow()
+    session.add(mapping)
+    session.commit()
+    session.refresh(mapping)
+    logger.info(f"[Mapping] Updated mapping {mapping_id} table name: {old_table_name} -> {new_table_name}")
+    return mapping
+
+
 def delete_mapping(session: Session, mapping_id: str) -> bool:
     """Delete mapping by ID."""
     mapping = session.get(ObjectMappingDef, mapping_id)
@@ -92,6 +121,131 @@ def delete_mapping(session: Session, mapping_id: str) -> bool:
     session.commit()
     logger.info(f"[Mapping] Deleted mapping: {mapping_id}")
     return True
+
+
+def get_mapping_by_table(
+    session: Session,
+    source_connection_id: str,
+    source_table_name: str
+) -> Optional[ObjectMappingDef]:
+    """Get mapping by connection ID and table name."""
+    stmt = select(ObjectMappingDef).where(
+        ObjectMappingDef.source_connection_id == source_connection_id,
+        ObjectMappingDef.source_table_name == source_table_name
+    )
+    return session.exec(stmt).first()
+
+
+def list_mappings_by_connection(
+    session: Session,
+    source_connection_id: str
+) -> List[ObjectMappingDef]:
+    """List all mappings for a specific connection."""
+    stmt = select(ObjectMappingDef).where(
+        ObjectMappingDef.source_connection_id == source_connection_id
+    )
+    return list(session.exec(stmt).all())
+
+
+def generate_mapping_spec_from_table(table_name: str) -> Dict[str, Any]:
+    """
+    Generate a basic mapping_spec from table structure.
+    
+    Creates a React Flow graph with:
+    - Source nodes for each column
+    - Direct edges from source to target (no transformation)
+    - Target nodes (to be configured by user)
+    
+    Args:
+        table_name: Table name in mdp_raw_store
+        
+    Returns:
+        Dict with 'nodes' and 'edges' keys
+    """
+    try:
+        # Connect to raw store
+        engine = create_engine(settings.raw_store_database_url, pool_pre_ping=True)
+        inspector = inspect(engine)
+        
+        # Get table columns
+        if not inspector.has_table(table_name):
+            logger.warning(f"[Mapping] Table {table_name} does not exist in raw store")
+            return {"nodes": [], "edges": []}
+        
+        columns = inspector.get_columns(table_name)
+        
+        # Generate nodes and edges
+        nodes = []
+        edges = []
+        
+        for col in columns:
+            col_name = col['name']
+            col_type = str(col['type'])
+            
+            # Skip internal columns
+            if col_name.startswith('_'):
+                continue
+            
+            # Create source node
+            source_node_id = f"source_{col_name}"
+            nodes.append({
+                "id": source_node_id,
+                "type": "sourceColumn",
+                "data": {
+                    "column": col_name,
+                    "type": col_type
+                },
+                "position": {"x": 0, "y": 0}  # Will be positioned by frontend
+            })
+            
+            # Create target node (placeholder - user will configure)
+            target_node_id = f"target_{col_name}"
+            nodes.append({
+                "id": target_node_id,
+                "type": "targetProperty",
+                "data": {
+                    "property": "",  # Empty - user will fill
+                    "type": _infer_property_type(col_type)
+                },
+                "position": {"x": 0, "y": 0}  # Will be positioned by frontend
+            })
+            
+            # Create direct edge (no transformation)
+            edges.append({
+                "id": f"edge_{col_name}",
+                "source": source_node_id,
+                "target": target_node_id,
+                "type": "default"
+            })
+        
+        engine.dispose()
+        
+        return {
+            "nodes": nodes,
+            "edges": edges
+        }
+        
+    except Exception as e:
+        logger.error(f"[Mapping] Failed to generate mapping spec from table {table_name}: {e}")
+        return {"nodes": [], "edges": []}
+
+
+def _infer_property_type(sql_type: str) -> str:
+    """Infer property type from SQL column type."""
+    sql_type_lower = sql_type.lower()
+    
+    if 'int' in sql_type_lower or 'bigint' in sql_type_lower or 'smallint' in sql_type_lower:
+        return "number"
+    elif 'float' in sql_type_lower or 'double' in sql_type_lower or 'decimal' in sql_type_lower:
+        return "number"
+    elif 'bool' in sql_type_lower or 'tinyint' in sql_type_lower:
+        return "boolean"
+    elif 'date' in sql_type_lower or 'time' in sql_type_lower or 'timestamp' in sql_type_lower:
+        return "datetime"
+    elif 'json' in sql_type_lower:
+        return "object"
+    else:
+        return "string"
 
 
 def publish_mapping(session: Session, mapping_id: str) -> Optional[ObjectMappingDef]:

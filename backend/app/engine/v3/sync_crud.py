@@ -2,11 +2,13 @@
 Sync Job CRUD operations for MDP Platform V3.1
 Tables: sys_sync_job_def, sys_sync_run_log
 """
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 from sqlmodel import Session, select
+from sqlalchemy import create_engine, text, inspect
 
 from app.core.logger import logger
+from app.core.config import settings
 from app.models.system import (
     Connection,
     SyncJobDef,
@@ -18,15 +20,72 @@ from app.models.system import (
     SyncRunLogCreate,
     SyncRunLogRead,
     SyncRunLogWithJob,
+    TargetTableInfo,
+    TargetTableListResponse,
 )
+from app.engine.v3 import mapping_crud
 
 
 # ==========================================
 # Sync Job Definition CRUD
 # ==========================================
 
-def create_sync_job(session: Session, data: SyncJobDefCreate) -> SyncJobDef:
-    """Create a new sync job definition."""
+def check_table_exists_in_raw_store(table_name: str) -> bool:
+    """Check if table exists in mdp_raw_store database."""
+    try:
+        engine = create_engine(settings.raw_store_database_url, pool_pre_ping=True)
+        inspector = inspect(engine)
+        exists = inspector.has_table(table_name)
+        engine.dispose()
+        return exists
+    except Exception as e:
+        logger.error(f"[SyncJob] Failed to check table existence: {e}")
+        return False
+
+
+def create_sync_job(
+    session: Session, 
+    data: SyncJobDefCreate
+) -> Tuple[SyncJobDef, Dict[str, Any]]:
+    """
+    Create a new sync job definition.
+    
+    Returns:
+        Tuple of (SyncJobDef, warnings_dict)
+        warnings_dict contains:
+        - mapping_exists: bool - Whether a mapping exists for this connection
+        - mapping_table_mismatch: Optional[str] - Existing mapping's table name if different
+        - table_exists: bool - Whether target_table exists in raw_store
+    """
+    warnings: Dict[str, Any] = {
+        "mapping_exists": False,
+        "mapping_table_mismatch": None,
+        "table_exists": False
+    }
+    
+    # 1. Validate target_table exists in raw_store (if sync job has run before)
+    # Note: For new sync jobs, table may not exist yet, so we check but don't fail
+    warnings["table_exists"] = check_table_exists_in_raw_store(data.target_table)
+    if not warnings["table_exists"]:
+        logger.info(f"[SyncJob] Target table {data.target_table} does not exist yet (will be created on first sync)")
+    
+    # 2. Check for existing mappings with same connection_id
+    existing_mappings = mapping_crud.list_mappings_by_connection(session, data.connection_id)
+    
+    if existing_mappings:
+        warnings["mapping_exists"] = True
+        
+        # Check if any mapping has different table name
+        for mapping in existing_mappings:
+            if mapping.source_table_name != data.target_table:
+                warnings["mapping_table_mismatch"] = mapping.source_table_name
+                logger.warning(
+                    f"[SyncJob] Found existing mapping with different table name: "
+                    f"{mapping.source_table_name} != {data.target_table}"
+                )
+                break
+    
+    # 3. Create sync job
     job = SyncJobDef(
         connection_id=data.connection_id,
         name=data.name,
@@ -40,7 +99,8 @@ def create_sync_job(session: Session, data: SyncJobDefCreate) -> SyncJobDef:
     session.commit()
     session.refresh(job)
     logger.info(f"[SyncJob] Created job: {job.id} ({job.name})")
-    return job
+    
+    return job, warnings
 
 
 def get_sync_job(session: Session, job_id: str) -> Optional[SyncJobDef]:
@@ -278,3 +338,89 @@ def complete_run_log(
     session.refresh(log)
     logger.info(f"[SyncRunLog] Completed log: {log_id} with status {status}")
     return log
+
+
+# ==========================================
+# Target Tables (for Object Type binding)
+# ==========================================
+
+def get_target_table_columns(table_name: str) -> Optional[List[Dict[str, Any]]]:
+    """Get column schema for a target table in mdp_raw_store."""
+    try:
+        engine = create_engine(settings.raw_store_database_url, pool_pre_ping=True)
+        inspector = inspect(engine)
+        
+        if not inspector.has_table(table_name):
+            engine.dispose()
+            return None
+        
+        columns = inspector.get_columns(table_name)
+        result = []
+        for col in columns:
+            result.append({
+                "name": col["name"],
+                "type": str(col["type"]),
+                "nullable": col.get("nullable", True),
+            })
+        
+        engine.dispose()
+        return result
+    except Exception as e:
+        logger.error(f"[SyncJob] Failed to get table columns for {table_name}: {e}")
+        return None
+
+
+def list_target_tables(
+    session: Session,
+    include_columns: bool = False,
+    only_synced: bool = False
+) -> TargetTableListResponse:
+    """
+    List all target tables from sync jobs.
+    
+    Args:
+        session: Database session
+        include_columns: If True, include column schema from mdp_raw_store
+        only_synced: If True, only return tables that have been successfully synced
+    
+    Returns:
+        TargetTableListResponse with list of target tables
+    """
+    # Get all sync jobs
+    stmt = select(SyncJobDef)
+    if only_synced:
+        stmt = stmt.where(SyncJobDef.last_run_status == "SUCCESS")
+    
+    jobs = list(session.exec(stmt).all())
+    
+    # Build result list with unique target tables
+    seen_tables = set()
+    tables = []
+    
+    for job in jobs:
+        # Skip duplicates (same target_table)
+        if job.target_table in seen_tables:
+            continue
+        seen_tables.add(job.target_table)
+        
+        # Get connection info
+        conn = session.get(Connection, job.connection_id)
+        
+        # Get column schema if requested
+        columns = None
+        if include_columns:
+            columns = get_target_table_columns(job.target_table)
+        
+        tables.append(TargetTableInfo(
+            target_table=job.target_table,
+            connection_id=job.connection_id,
+            connection_name=conn.name if conn else "Unknown",
+            sync_job_id=job.id,
+            sync_job_name=job.name,
+            last_sync_status=job.last_run_status,
+            last_sync_at=job.last_run_at,
+            rows_synced=job.rows_synced,
+            columns=columns,
+        ))
+    
+    return TargetTableListResponse(tables=tables, total=len(tables))

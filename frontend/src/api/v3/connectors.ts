@@ -176,6 +176,33 @@ export interface ISyncRunLogWithJob extends ISyncRunLog {
 }
 
 // ==========================================
+// Target Table Types (for Object Type binding)
+// ==========================================
+
+export interface ITargetTableColumn {
+  name: string;
+  type: string;
+  nullable: boolean;
+}
+
+export interface ITargetTableInfo {
+  target_table: string;
+  connection_id: string;
+  connection_name: string;
+  sync_job_id: string;
+  sync_job_name: string;
+  last_sync_status: SyncStatus | null;
+  last_sync_at: string | null;
+  rows_synced: number | null;
+  columns: ITargetTableColumn[] | null;
+}
+
+export interface ITargetTableListResponse {
+  tables: ITargetTableInfo[];
+  total: number;
+}
+
+// ==========================================
 // Connection API Functions
 // ==========================================
 
@@ -306,4 +333,27 @@ export const runSyncJob = async (id: string): Promise<ISyncRunLog> => {
 export const fetchSyncJobLogs = async (jobId: string): Promise<ISyncRunLogWithJob[]> => {
   const response = await v3Client.get(`/sync-jobs/${jobId}/logs`);
   return response.data || [];
+};
+
+// ==========================================
+// Target Tables API Functions
+// ==========================================
+
+/**
+ * List all target tables from sync jobs.
+ * Use this to get available data sources for binding to object types.
+ */
+export const fetchTargetTables = async (
+  includeColumns: boolean = false,
+  onlySynced: boolean = false
+): Promise<ITargetTableListResponse> => {
+  const params: Record<string, boolean> = {};
+  if (includeColumns) {
+    params.include_columns = true;
+  }
+  if (onlySynced) {
+    params.only_synced = true;
+  }
+  const response = await v3Client.get('/sync-jobs/target-tables', { params });
+  return response.data || { tables: [], total: 0 };
 };

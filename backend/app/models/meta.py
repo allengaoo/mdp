@@ -153,6 +153,8 @@ class ObjectTypeCreate(SQLModel):
     description: Optional[str] = Field(default=None, max_length=500)
     property_schema: Optional[Dict[str, Any]] = None
     project_id: Optional[str] = Field(default=None, max_length=36)
+    source_connection_id: Optional[str] = Field(default=None, max_length=36)
+    source_table_name: Optional[str] = Field(default=None, max_length=100)
 
 
 class ObjectTypeUpdate(SQLModel):

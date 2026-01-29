@@ -87,6 +87,10 @@ export interface IV3ObjectTypeVer {
 export interface IV3ObjectTypeProperty {
   binding_id: number;
   property_def_id: string;
+  /** API name of the shared property (for Use Shared Property dropdown). */
+  shared_property_api_name?: string;
+  /** Display name of the shared property. */
+  shared_property_display_name?: string;
   api_name: string;
   display_name: string | null;
   data_type: string;

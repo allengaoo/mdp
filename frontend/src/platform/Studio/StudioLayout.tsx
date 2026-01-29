@@ -75,11 +75,6 @@ const StudioLayout: React.FC = () => {
           label: '链接类型 (Link Types)',
         },
         {
-          key: `/oma/project/${projectId}/shared-properties`,
-          icon: <PropertySafetyOutlined />,
-          label: '属性引用 (Property Refs)',
-        },
-        {
           key: `/oma/project/${projectId}/physical-properties`,
           icon: <DatabaseOutlined />,
           label: '物理属性 (Physical Properties)',

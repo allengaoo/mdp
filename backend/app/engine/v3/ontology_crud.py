@@ -467,14 +467,22 @@ def bind_property_to_object_ver(
     object_ver_id: str,
     data: ObjectVerPropertyCreate
 ) -> ObjectVerProperty:
-    """Bind a shared property to an object type version."""
-    logger.info(f"[V3] Binding property {data.property_def_id} to version {object_ver_id}")
+    """Bind a property to an object type version.
+    
+    属性可以是：
+    - 本地属性：property_def_id 为空，使用 local_* 字段
+    - 共享属性引用：property_def_id 指向 SharedPropertyDef
+    """
+    prop_name = data.local_api_name or data.property_def_id or "unknown"
+    logger.info(f"[V3] Binding property '{prop_name}' to version {object_ver_id}")
     
     try:
         db_obj = ObjectVerProperty(
             object_ver_id=object_ver_id,
-            property_def_id=data.property_def_id,
+            property_def_id=data.property_def_id,  # 可为空（本地属性）
             local_api_name=data.local_api_name,
+            local_display_name=data.local_display_name,
+            local_data_type=data.local_data_type,
             is_primary_key=data.is_primary_key,
             is_required=data.is_required,
             is_title=data.is_title,
@@ -496,7 +504,10 @@ def get_object_ver_properties(
     session: Session,
     object_ver_id: str
 ) -> List[Dict[str, Any]]:
-    """Get all properties bound to an object type version."""
+    """Get all properties bound to an object type version.
+    
+    返回本地属性和共享属性引用，统一格式。
+    """
     statement = select(ObjectVerProperty).where(
         ObjectVerProperty.object_ver_id == object_ver_id
     )
@@ -504,15 +515,37 @@ def get_object_ver_properties(
     
     result = []
     for binding in bindings:
-        # Get the property definition
-        prop_def = session.get(SharedPropertyDef, binding.property_def_id)
+        # 尝试获取共享属性定义（若有）
+        prop_def = None
+        if binding.property_def_id:
+            prop_def = session.get(SharedPropertyDef, binding.property_def_id)
+        
         if prop_def:
+            # 共享属性引用：从 SharedPropertyDef 获取类型信息
             result.append({
                 "binding_id": binding.id,
                 "property_def_id": binding.property_def_id,
+                "shared_property_api_name": prop_def.api_name,
+                "shared_property_display_name": prop_def.display_name,
                 "api_name": binding.local_api_name or prop_def.api_name,
-                "display_name": prop_def.display_name,
-                "data_type": prop_def.data_type,
+                "display_name": binding.local_display_name or prop_def.display_name,
+                "data_type": binding.local_data_type or prop_def.data_type,
+                "is_primary_key": binding.is_primary_key,
+                "is_required": binding.is_required,
+                "is_title": binding.is_title,
+                "default_value": binding.default_value,
+                "validation_rules": binding.validation_rules,
+            })
+        else:
+            # 本地属性：从 binding 的 local_* 字段获取类型信息
+            result.append({
+                "binding_id": binding.id,
+                "property_def_id": None,
+                "shared_property_api_name": None,
+                "shared_property_display_name": None,
+                "api_name": binding.local_api_name,
+                "display_name": binding.local_display_name or binding.local_api_name,
+                "data_type": binding.local_data_type or "STRING",
                 "is_primary_key": binding.is_primary_key,
                 "is_required": binding.is_required,
                 "is_title": binding.is_title,
@@ -778,13 +811,18 @@ def list_shared_properties_by_project(
     """
     List shared properties used by a specific project.
     
-    Returns distinct shared properties that are bound to any object type
-    associated with the project via ctx_project_object_binding.
+    Returns distinct shared properties that are bound to:
+    1. Any object type associated with the project via ctx_project_object_binding
+    2. Any link type where source OR target object type is associated with the project
     
     Query path:
-    Project → ProjectObjectBinding → ObjectTypeDef → ObjectTypeVer 
-            → ObjectVerProperty → SharedPropertyDef
+    - Object Types: Project → ProjectObjectBinding → ObjectTypeDef → ObjectTypeVer → ObjectVerProperty → SharedPropertyDef
+    - Link Types: Project → ProjectObjectBinding → ObjectTypeDef (source/target) → LinkTypeVer → LinkVerProperty → SharedPropertyDef
     """
+    from app.models.context import ProjectObjectBinding
+    from app.models.ontology import LinkVerProperty, LinkTypeVer
+    from sqlalchemy import or_
+    
     # Step 1: Get all object_def_ids bound to this project
     binding_stmt = select(ProjectObjectBinding.object_def_id).where(
         ProjectObjectBinding.project_id == project_id
@@ -794,28 +832,51 @@ def list_shared_properties_by_project(
     if not object_def_ids:
         return []
     
+    # --- Part A: Shared Properties from Object Types ---
     # Step 2: Get current version IDs for these object types
     obj_def_stmt = select(ObjectTypeDef.current_version_id).where(
         ObjectTypeDef.id.in_(object_def_ids),
         ObjectTypeDef.current_version_id.isnot(None)
     )
-    version_ids = [v for v in session.exec(obj_def_stmt).all() if v is not None]
+    obj_version_ids = [v for v in session.exec(obj_def_stmt).all() if v is not None]
     
-    if not version_ids:
+    obj_prop_ids = set()
+    if obj_version_ids:
+        # Step 3: Get distinct property_def_ids from rel_object_ver_property
+        prop_binding_stmt = select(ObjectVerProperty.property_def_id).where(
+            ObjectVerProperty.object_ver_id.in_(obj_version_ids),
+            ObjectVerProperty.property_def_id.isnot(None)
+        ).distinct()
+        obj_prop_ids = set(session.exec(prop_binding_stmt).all())
+    
+    # --- Part B: Shared Properties from Link Types ---
+    # Step 4: Find link versions where source OR target is in object_def_ids
+    # Note: A link is considered "in the project" if it connects objects in the project
+    link_ver_stmt = select(LinkTypeVer.id).where(
+        or_(
+            LinkTypeVer.source_object_def_id.in_(object_def_ids),
+            LinkTypeVer.target_object_def_id.in_(object_def_ids)
+        )
+    )
+    link_version_ids = list(session.exec(link_ver_stmt).all())
+    
+    link_prop_ids = set()
+    if link_version_ids:
+        # Step 5: Get distinct property_def_ids from rel_link_ver_property
+        link_prop_binding_stmt = select(LinkVerProperty.property_def_id).where(
+            LinkVerProperty.link_ver_id.in_(link_version_ids)
+        ).distinct()
+        link_prop_ids = set(session.exec(link_prop_binding_stmt).all())
+    
+    # --- Combine and Fetch ---
+    all_prop_ids = list(obj_prop_ids | link_prop_ids)
+    
+    if not all_prop_ids:
         return []
     
-    # Step 3: Get distinct property_def_ids from rel_object_ver_property
-    prop_binding_stmt = select(ObjectVerProperty.property_def_id).where(
-        ObjectVerProperty.object_ver_id.in_(version_ids)
-    ).distinct()
-    property_def_ids = list(session.exec(prop_binding_stmt).all())
-    
-    if not property_def_ids:
-        return []
-    
-    # Step 4: Get the shared property definitions
+    # Step 6: Get the shared property definitions
     props_stmt = select(SharedPropertyDef).where(
-        SharedPropertyDef.id.in_(property_def_ids)
+        SharedPropertyDef.id.in_(all_prop_ids)
     ).offset(skip).limit(limit)
     
     return list(session.exec(props_stmt).all())

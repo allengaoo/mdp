@@ -1,6 +1,6 @@
 """
 Context Layer Models for MDP Platform V3.1
-Tables: ctx_project_object_binding, ctx_object_mapping_def
+Tables: ctx_project_object_binding, ctx_object_mapping_def, ctx_link_mapping_def
 """
 import uuid
 from datetime import datetime
@@ -88,6 +88,26 @@ class ObjectMappingDef(SQLModel, table=True):
     updated_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
 
 
+class LinkMappingDef(SQLModel, table=True):
+    """Link mapping definition - for N:N relationships.
+    
+    Defines how to map a join table to an ontology link type.
+    Maps to table: ctx_link_mapping_def
+    """
+    __tablename__ = "ctx_link_mapping_def"
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
+    link_def_id: str = Field(max_length=36, index=True)  # Target ontology link type
+    source_connection_id: str = Field(max_length=36)  # Source connection
+    join_table_name: str = Field(max_length=100)  # Join table in mdp_raw_store
+    source_key_column: str = Field(max_length=100)  # Column mapping to source object PK
+    target_key_column: str = Field(max_length=100)  # Column mapping to target object PK
+    property_mappings: Dict[str, str] = Field(default={}, sa_column=Column(JSON))  # { "link_prop": "table_col" }
+    status: str = Field(default="DRAFT", max_length=20)  # DRAFT, PUBLISHED
+    created_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
+    updated_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
+
+
 # ==========================================
 # DTOs - Object Mapping
 # ==========================================
@@ -123,6 +143,43 @@ class ObjectMappingDefWithDetails(ObjectMappingDefRead):
     """DTO with related entity details."""
     object_type_name: Optional[str] = None
     connection_name: Optional[str] = None
+
+
+# ==========================================
+# DTOs - Link Mapping
+# ==========================================
+
+class LinkMappingDefCreate(SQLModel):
+    """DTO for creating LinkMappingDef."""
+    link_def_id: str = Field(max_length=36)
+    source_connection_id: str = Field(max_length=36)
+    join_table_name: str = Field(max_length=100)
+    source_key_column: str = Field(max_length=100)
+    target_key_column: str = Field(max_length=100)
+    property_mappings: Optional[Dict[str, str]] = None
+
+
+class LinkMappingDefUpdate(SQLModel):
+    """DTO for updating LinkMappingDef."""
+    join_table_name: Optional[str] = None
+    source_key_column: Optional[str] = None
+    target_key_column: Optional[str] = None
+    property_mappings: Optional[Dict[str, str]] = None
+    status: Optional[str] = None
+
+
+class LinkMappingDefRead(SQLModel):
+    """DTO for reading LinkMappingDef."""
+    id: str
+    link_def_id: str
+    source_connection_id: str
+    join_table_name: str
+    source_key_column: str
+    target_key_column: str
+    property_mappings: Dict[str, str]
+    status: str
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
 
 
 # ==========================================

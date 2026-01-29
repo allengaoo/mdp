@@ -1,6 +1,6 @@
 """
 Mapping CRUD operations for MDP Platform V3.1
-Tables: ctx_object_mapping_def
+Tables: ctx_object_mapping_def, ctx_link_mapping_def
 """
 from typing import List, Optional, Dict, Any
 from datetime import datetime
@@ -15,6 +15,9 @@ from app.models.context import (
     ObjectMappingDefUpdate,
     ObjectMappingDefRead,
     ObjectMappingDefWithDetails,
+    LinkMappingDef,
+    LinkMappingDefCreate,
+    LinkMappingDefUpdate,
 )
 
 
@@ -261,3 +264,70 @@ def publish_mapping(session: Session, mapping_id: str) -> Optional[ObjectMapping
     session.refresh(mapping)
     logger.info(f"[Mapping] Published mapping: {mapping_id}")
     return mapping
+
+
+# ==========================================
+# Link Mapping CRUD
+# ==========================================
+
+def create_link_mapping(session: Session, data: LinkMappingDefCreate) -> LinkMappingDef:
+    """Create a new link mapping definition."""
+    mapping = LinkMappingDef(
+        link_def_id=data.link_def_id,
+        source_connection_id=data.source_connection_id,
+        join_table_name=data.join_table_name,
+        source_key_column=data.source_key_column,
+        target_key_column=data.target_key_column,
+        property_mappings=data.property_mappings or {},
+        status="DRAFT",
+    )
+    session.add(mapping)
+    session.commit()
+    session.refresh(mapping)
+    logger.info(f"[Mapping] Created link mapping: {mapping.id}")
+    return mapping
+
+
+def get_link_mapping(session: Session, mapping_id: str) -> Optional[LinkMappingDef]:
+    """Get link mapping by ID."""
+    return session.get(LinkMappingDef, mapping_id)
+
+
+def get_link_mapping_by_def_id(session: Session, link_def_id: str) -> Optional[LinkMappingDef]:
+    """Get link mapping by link definition ID."""
+    stmt = select(LinkMappingDef).where(LinkMappingDef.link_def_id == link_def_id)
+    return session.exec(stmt).first()
+
+
+def update_link_mapping(
+    session: Session,
+    mapping_id: str,
+    data: LinkMappingDefUpdate
+) -> Optional[LinkMappingDef]:
+    """Update link mapping definition."""
+    mapping = session.get(LinkMappingDef, mapping_id)
+    if not mapping:
+        return None
+    
+    update_data = data.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(mapping, key, value)
+    
+    mapping.updated_at = datetime.utcnow()
+    session.add(mapping)
+    session.commit()
+    session.refresh(mapping)
+    logger.info(f"[Mapping] Updated link mapping: {mapping_id}")
+    return mapping
+
+
+def delete_link_mapping(session: Session, mapping_id: str) -> bool:
+    """Delete link mapping by ID."""
+    mapping = session.get(LinkMappingDef, mapping_id)
+    if not mapping:
+        return False
+    
+    session.delete(mapping)
+    session.commit()
+    logger.info(f"[Mapping] Deleted link mapping: {mapping_id}")
+    return True

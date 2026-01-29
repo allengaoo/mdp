@@ -85,10 +85,10 @@ const ObjectTypeEditor: React.FC<ObjectTypeEditorProps> = ({
       // Initialize property mappings from properties array (V3 format)
       if (objectType.properties && objectType.properties.length > 0) {
         const mappings: PropertyMapping[] = objectType.properties.map((prop) => ({
-          rawColumn: prop.api_name, // In edit mode, we use property name as raw column
+          rawColumn: prop.api_name,
           propertyName: prop.api_name,
-          type: prop.data_type.toLowerCase(), // Convert STRING -> string, etc.
-          useSharedProperty: prop.property_def_id, // Use property_def_id to identify shared property
+          type: (prop.data_type || 'STRING').toLowerCase(),
+          useSharedProperty: prop.shared_property_api_name ?? undefined,
         }));
         setPropertyMappings(mappings);
       }

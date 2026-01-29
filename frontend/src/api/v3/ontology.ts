@@ -274,6 +274,70 @@ export const createLinkType = async (
 };
 
 // ==========================================
+// Link Mapping API
+// ==========================================
+
+export interface ILinkMapping {
+  id: string;
+  link_def_id: string;
+  source_connection_id: string;
+  join_table_name: string;
+  source_key_column: string;
+  target_key_column: string;
+  property_mappings: Record<string, string>;
+  status: string;
+}
+
+export interface ILinkMappingCreate {
+  link_def_id: string;
+  source_connection_id: string;
+  join_table_name: string;
+  source_key_column: string;
+  target_key_column: string;
+  property_mappings?: Record<string, string>;
+}
+
+export interface ILinkMappingUpdate {
+  join_table_name?: string;
+  source_key_column?: string;
+  target_key_column?: string;
+  property_mappings?: Record<string, string>;
+  status?: string;
+}
+
+/**
+ * Create a new link mapping.
+ */
+export const createLinkMapping = async (data: ILinkMappingCreate): Promise<ILinkMapping> => {
+  const response = await v3Client.post('/mappings/link-mappings', data);
+  return response.data;
+};
+
+/**
+ * Get link mapping by link definition ID.
+ */
+export const getLinkMappingByDefId = async (linkDefId: string): Promise<ILinkMapping | null> => {
+  try {
+    const response = await v3Client.get(`/mappings/link-mappings/by-def/${linkDefId}`);
+    return response.data;
+  } catch (error) {
+    // Return null if not found (404)
+    return null;
+  }
+};
+
+/**
+ * Update a link mapping.
+ */
+export const updateLinkMapping = async (
+  mappingId: string,
+  data: ILinkMappingUpdate
+): Promise<ILinkMapping> => {
+  const response = await v3Client.put(`/mappings/link-mappings/${mappingId}`, data);
+  return response.data;
+};
+
+// ==========================================
 // Project Object Bindings API
 // ==========================================
 

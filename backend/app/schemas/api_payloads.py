@@ -57,6 +57,8 @@ class ObjectTypeRequest(BaseModel):
     project_id: Optional[str] = Field(default=None, max_length=36, description="Project ID")
     property_schema: List[PropertyDef] = Field(default_factory=list, description="List of property definitions")
     description: Optional[str] = Field(default=None, max_length=500, description="Optional description")
+    source_connection_id: Optional[str] = Field(default=None, max_length=36, description="Connection ID for datasource (from sync job)")
+    source_table_name: Optional[str] = Field(default=None, max_length=100, description="Source table name in mdp_raw_store (from sync job target_table)")
     
     class Config:
         json_schema_extra = {

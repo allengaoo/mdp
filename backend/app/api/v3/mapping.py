@@ -23,6 +23,9 @@ from app.models.context import (
     ObjectInstanceLineage,
     ObjectInstanceLineageRead,
     LineageLookupResponse,
+    LinkMappingDefRead,
+    LinkMappingDefCreate,
+    LinkMappingDefUpdate,
 )
 
 router = APIRouter(prefix="/mappings", tags=["Mappings"])
@@ -89,6 +92,44 @@ def delete_mapping(
     if not success:
         raise HTTPException(status_code=404, detail="Mapping not found")
     return {"message": "Mapping deleted successfully"}
+
+
+# ==========================================
+# Link Mapping Endpoints
+# ==========================================
+
+@router.post("/link-mappings", response_model=LinkMappingDefRead)
+def create_link_mapping(
+    data: LinkMappingDefCreate,
+    session: Session = Depends(get_session)
+):
+    """Create a new link mapping definition."""
+    return mapping_crud.create_link_mapping(session, data)
+
+
+@router.get("/link-mappings/by-def/{link_def_id}", response_model=LinkMappingDefRead)
+def get_link_mapping_by_def(
+    link_def_id: str,
+    session: Session = Depends(get_session)
+):
+    """Get link mapping by link definition ID."""
+    mapping = mapping_crud.get_link_mapping_by_def_id(session, link_def_id)
+    if not mapping:
+        raise HTTPException(status_code=404, detail="Link mapping not found")
+    return mapping
+
+
+@router.put("/link-mappings/{mapping_id}", response_model=LinkMappingDefRead)
+def update_link_mapping(
+    mapping_id: str,
+    data: LinkMappingDefUpdate,
+    session: Session = Depends(get_session)
+):
+    """Update a link mapping definition."""
+    mapping = mapping_crud.update_link_mapping(session, mapping_id, data)
+    if not mapping:
+        raise HTTPException(status_code=404, detail="Link mapping not found")
+    return mapping
 
 
 # ==========================================

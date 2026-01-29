@@ -47,11 +47,19 @@ router = APIRouter(prefix="/ontology", tags=["Ontology"])
 
 @router.get("/properties", response_model=List[SharedPropertyDefRead])
 def list_shared_properties(
+    project_id: Optional[str] = Query(None, description="Filter by project ID"),
     skip: int = 0,
     limit: int = 100,
     session: Session = Depends(get_session)
 ):
-    """List all shared property definitions."""
+    """
+    List shared property definitions.
+    
+    Optionally filter by project_id to get only properties used in that project
+    (referenced by object types or link types in the project).
+    """
+    if project_id:
+        return ontology_crud.list_shared_properties_by_project(session, project_id, skip=skip, limit=limit)
     return ontology_crud.list_shared_properties(session, skip=skip, limit=limit)
 
 

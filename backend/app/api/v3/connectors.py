@@ -280,6 +280,7 @@ def create_sync_job(
             last_run_status=job.last_run_status,
             last_run_at=job.last_run_at,
             rows_synced=job.rows_synced,
+            cached_schema=job.cached_schema,
             created_at=job.created_at,
             updated_at=job.updated_at,
         )

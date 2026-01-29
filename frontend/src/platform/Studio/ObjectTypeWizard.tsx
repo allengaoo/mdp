@@ -21,7 +21,6 @@ import { InboxOutlined } from '@ant-design/icons';
 import type { UploadProps } from 'antd';
 import { useParams } from 'react-router-dom';
 import {
-  fetchDatasources,
   fetchSharedProperties,
   createObjectType,
   IDataSourceTable,
@@ -64,7 +63,6 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
   const [propertyMappings, setPropertyMappings] = useState<PropertyMapping[]>([]);
   const [uploadedColumns, setUploadedColumns] = useState<IDataSourceTable['columns_schema']>([]);
   const [loading, setLoading] = useState(false);
-  const [datasources, setDatasources] = useState<IDataSourceTable[]>([]);
   const [sharedProperties, setSharedProperties] = useState<ISharedProperty[]>([]);
   const [targetTables, setTargetTables] = useState<ITargetTableInfo[]>([]);
   const [selectedTargetTable, setSelectedTargetTable] = useState<ITargetTableInfo | null>(null);
@@ -72,18 +70,16 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
   // Store form values from Step 1 to ensure they're available when creating
   const [step1Values, setStep1Values] = useState<{ api_name?: string; display_name?: string; description?: string }>({});
 
-  // Fetch datasources, shared properties, and target tables on mount
+  // Fetch shared properties and target tables on mount
   useEffect(() => {
     if (visible) {
       const loadData = async () => {
         try {
           setLoadingData(true);
-          const [datasourcesData, sharedPropsData, targetTablesData] = await Promise.all([
-            fetchDatasources(),
+          const [sharedPropsData, targetTablesData] = await Promise.all([
             fetchSharedProperties(),
             fetchTargetTables(true, false), // include columns, don't require synced
           ]);
-          setDatasources(datasourcesData);
           setSharedProperties(sharedPropsData);
           setTargetTables(targetTablesData.tables || []);
         } catch (error: any) {
@@ -125,27 +121,6 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
     setStep1Values((prev: { api_name?: string; display_name?: string; description?: string }) => ({ ...prev, description }));
   };
 
-  // Handle data source selection
-  const handleDataSourceSelect = (record: IDataSourceTable) => {
-    setSelectedDataSource(record);
-    setSelectedTargetTable(null); // Clear target table selection
-    // Parse columns_schema if it's a string
-    const columns = Array.isArray(record.columns_schema)
-      ? record.columns_schema
-      : typeof record.columns_schema === 'string'
-      ? JSON.parse(record.columns_schema)
-      : [];
-    setAvailableColumns(columns);
-    // Initialize property mappings
-    const mappings: PropertyMapping[] = columns.map((col: { name: string; type: string }) => ({
-      rawColumn: col.name,
-      propertyName: col.name,
-      type: mapColumnTypeToPropertyType(col.type),
-      useSharedProperty: undefined,
-    }));
-    setPropertyMappings(mappings);
-  };
-
   // Handle target table selection (from sync jobs)
   const handleTargetTableSelect = (record: ITargetTableInfo) => {
     setSelectedTargetTable(record);
@@ -153,6 +128,19 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
     
     // Use columns from target table
     const columns = record.columns || [];
+    
+    // Check if table has column information
+    if (columns.length === 0) {
+      // Clear previous columns and mappings
+      setAvailableColumns([]);
+      setPropertyMappings([]);
+      message.warning(
+        `目标表 "${record.target_table}" 暂无列信息。请先在连接器管理页面执行同步任务，然后再选择此表。`,
+        6
+      );
+      return;
+    }
+    
     setAvailableColumns(columns);
     
     // Initialize property mappings
@@ -164,7 +152,7 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
     }));
     setPropertyMappings(mappings);
     
-    message.success(`已选择目标表: ${record.target_table}`);
+    message.success(`已选择目标表: ${record.target_table} (${columns.length} 列)`);
   };
 
   // Map database column type to property type
@@ -353,8 +341,19 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
         await form.validateFields(['display_name', 'api_name', 'description']);
         return true;
       } else if (currentStep === 1) {
-        if (availableColumns.length === 0) {
-          message.error('Please select a data source or upload a CSV file');
+        // Check if user has selected a target table, data source, or uploaded CSV
+        if (!selectedTargetTable && !selectedDataSource && uploadedColumns.length === 0) {
+          message.error('请选择数据源：从同步任务选择目标表或上传 CSV 文件');
+          return false;
+        }
+        // If selected target table but no columns available, prevent continuing
+        if (selectedTargetTable && availableColumns.length === 0) {
+          message.error('所选目标表暂无列信息，请先执行同步任务或选择其他表');
+          return false;
+        }
+        // If uploaded CSV but no columns, prevent continuing
+        if (uploadedColumns.length > 0 && availableColumns.length === 0) {
+          message.error('CSV 文件解析失败，请检查文件格式');
           return false;
         }
         return true;
@@ -451,6 +450,10 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
         description: values.description || null,
         property_schema: propertySchema,
         project_id: projectId || null,
+        ...(selectedTargetTable && {
+          source_connection_id: selectedTargetTable.connection_id,
+          source_table_name: selectedTargetTable.target_table,
+        }),
       };
 
       console.log('Creating object type with payload:', JSON.stringify(payload, null, 2));
@@ -494,20 +497,6 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
     onCancel();
   };
 
-  // Data source table columns
-  const datasourceColumns = [
-    {
-      title: 'Table Name',
-      dataIndex: 'table_name',
-      key: 'table_name',
-    },
-    {
-      title: 'DB Type',
-      dataIndex: 'db_type',
-      key: 'db_type',
-    },
-  ];
-
   // Property mapping table columns
   const mappingColumns = [
     {
@@ -524,7 +513,7 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
         <Input
           value={record.propertyName}
           onChange={(e) => handlePropertyMappingChange(index, 'propertyName', e.target.value)}
-          disabled={!!record.useSharedProperty}
+          disabled={!!record.useSharedProperty || record.rawColumn === primaryKey}
         />
       ),
     },
@@ -536,7 +525,7 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
         <Select
           value={record.type}
           onChange={(value) => handlePropertyMappingChange(index, 'type', value)}
-          disabled={!!record.useSharedProperty}
+          disabled={!!record.useSharedProperty || record.rawColumn === primaryKey}
           style={{ width: '100%' }}
         >
           <Select.Option value="string">String</Select.Option>
@@ -558,6 +547,7 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
           allowClear
           placeholder="None"
           style={{ width: '100%' }}
+          disabled={record.rawColumn === primaryKey}
         >
           {sharedProperties.map((prop) => (
             <Select.Option key={prop.api_name} value={prop.api_name}>
@@ -695,24 +685,6 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
                 </div>
               )}
             </Tabs.TabPane>
-            <Tabs.TabPane tab="从数据目录选择" key="catalog">
-              {loadingData ? (
-                <div style={{ textAlign: 'center', padding: '40px' }}>加载中...</div>
-              ) : (
-                <Table
-                  columns={datasourceColumns}
-                  dataSource={datasources}
-                  rowKey="id"
-                  rowSelection={{
-                    type: 'radio',
-                    selectedRowKeys: selectedDataSource ? [selectedDataSource.id] : [],
-                    onSelect: (record) => handleDataSourceSelect(record),
-                  }}
-                  pagination={false}
-                  loading={loadingData}
-                />
-              )}
-            </Tabs.TabPane>
           </Tabs>
         </div>
       )}
@@ -741,6 +713,9 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
             rowKey="rawColumn"
             pagination={false}
             size="small"
+            onRow={(record) => ({
+              style: record.rawColumn === primaryKey ? { background: '#fafafa' } : {},
+            })}
           />
         </div>
       )}

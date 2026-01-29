@@ -32,7 +32,11 @@ import {
   BarChartOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { fetchObjectDefsWithStats, IV3ObjectDefWithStats } from '../../api/v3/objects';
+import { fetchObjectDefsWithStats, deleteObjectDef, IV3ObjectDefWithStats } from '../../api/v3/objects';
+import { fetchObjectTypeById } from '../../api/v3/ontology';
+import { IV3ObjectTypeFull } from '../../api/v3/types';
+import ObjectTypeWizard from '../Studio/ObjectTypeWizard';
+import ObjectTypeEditor from '../Studio/ObjectTypeEditor';
 
 const { Title, Text } = Typography;
 
@@ -57,6 +61,9 @@ const ObjectCenter: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchText, setSearchText] = useState('');
+  const [wizardVisible, setWizardVisible] = useState(false);
+  const [editorVisible, setEditorVisible] = useState(false);
+  const [currentObject, setCurrentObject] = useState<IV3ObjectTypeFull | null>(null);
 
   // Load data from API
   const loadData = async () => {
@@ -111,17 +118,51 @@ const ObjectCenter: React.FC = () => {
 
   // Handle create new object type
   const handleCreate = () => {
-    message.info('新建对象类型功能开发中...');
+    setWizardVisible(true);
+  };
+
+  // Handle create success
+  const handleCreateSuccess = () => {
+    setWizardVisible(false);
+    loadData(); // Refresh the list
   };
 
   // Handle edit
-  const handleEdit = (record: IV3ObjectDefWithStats) => {
-    message.info(`编辑对象类型: ${record.api_name}`);
+  const handleEdit = async (record: IV3ObjectDefWithStats) => {
+    const hide = message.loading('加载对象类型详情...', 0);
+    try {
+      const fullObject = await fetchObjectTypeById(record.id);
+      if (fullObject) {
+        setCurrentObject(fullObject);
+        setEditorVisible(true);
+      } else {
+        message.error('无法加载对象类型详情');
+      }
+    } catch (error) {
+      console.error(error);
+      message.error('加载对象类型详情失败');
+    } finally {
+      hide();
+    }
+  };
+
+  // Handle edit success
+  const handleEditSuccess = () => {
+    setEditorVisible(false);
+    setCurrentObject(null);
+    loadData(); // Refresh the list
   };
 
   // Handle delete
-  const handleDelete = (record: IV3ObjectDefWithStats) => {
-    message.info(`删除对象类型: ${record.api_name}`);
+  const handleDelete = async (record: IV3ObjectDefWithStats) => {
+    try {
+      await deleteObjectDef(record.id);
+      message.success(`对象类型 "${record.display_name || record.api_name}" 已删除`);
+      loadData(); // Refresh the list
+    } catch (err: any) {
+      const errorMsg = err.response?.data?.detail || '删除对象类型失败';
+      message.error(errorMsg);
+    }
   };
 
   // Table columns definition
@@ -345,6 +386,20 @@ const ObjectCenter: React.FC = () => {
           background: '#fff',
           borderRadius: 8,
         }}
+      />
+      <ObjectTypeWizard
+        visible={wizardVisible}
+        onCancel={() => setWizardVisible(false)}
+        onSuccess={handleCreateSuccess}
+      />
+      <ObjectTypeEditor
+        visible={editorVisible}
+        objectType={currentObject}
+        onCancel={() => {
+          setEditorVisible(false);
+          setCurrentObject(null);
+        }}
+        onSuccess={handleEditSuccess}
       />
     </div>
   );

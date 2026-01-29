@@ -23,7 +23,7 @@ from app.models.system import (
     TargetTableInfo,
     TargetTableListResponse,
 )
-from app.engine.v3 import mapping_crud
+from app.engine.v3 import mapping_crud, connector_crud
 
 
 # ==========================================
@@ -85,7 +85,37 @@ def create_sync_job(
                 )
                 break
     
-    # 3. Create sync job
+    # 3. Get source table schema from connection
+    cached_schema = None
+    try:
+        conn = session.get(Connection, data.connection_id)
+        if conn and "table" in data.source_config:
+            source_table_name = data.source_config["table"]
+            # Explore source to get table schema
+            explorer_result = connector_crud.explore_source(conn.conn_type, conn.config_json)
+            # Find the table in explorer results
+            for table_info in explorer_result.tables:
+                if table_info.name == source_table_name:
+                    # Convert columns to schema format
+                    cached_schema = {
+                        "columns": [
+                            {
+                                "name": col["name"],
+                                "type": col["type"],
+                                "nullable": col.get("nullable", True)
+                            }
+                            for col in (table_info.columns or [])
+                        ]
+                    }
+                    logger.info(f"[SyncJob] Cached schema for source table {source_table_name}: {len(cached_schema['columns'])} columns")
+                    break
+            if not cached_schema:
+                logger.warning(f"[SyncJob] Source table {source_table_name} not found in explorer results")
+    except Exception as e:
+        logger.warning(f"[SyncJob] Failed to get source table schema: {e}")
+        # Continue without schema - can be updated later
+    
+    # 4. Create sync job
     job = SyncJobDef(
         connection_id=data.connection_id,
         name=data.name,
@@ -94,6 +124,7 @@ def create_sync_job(
         sync_mode=data.sync_mode,
         schedule_cron=data.schedule_cron,
         is_enabled=data.is_enabled,
+        cached_schema=cached_schema,
     )
     session.add(job)
     session.commit()
@@ -176,6 +207,7 @@ def list_sync_jobs_with_connection(
             last_run_status=job.last_run_status,
             last_run_at=job.last_run_at,
             rows_synced=job.rows_synced,
+            cached_schema=job.cached_schema,
             created_at=job.created_at,
             updated_at=job.updated_at,
             connection_name=conn.name if conn else None,
@@ -409,7 +441,17 @@ def list_target_tables(
         # Get column schema if requested
         columns = None
         if include_columns:
-            columns = get_target_table_columns(job.target_table)
+            # Priority 1: Use cached schema from sync job definition
+            if job.cached_schema and "columns" in job.cached_schema:
+                columns = job.cached_schema["columns"]
+                logger.debug(f"[SyncJob] Using cached schema for {job.target_table}: {len(columns)} columns")
+            else:
+                # Priority 2: Query from mdp_raw_store (table might have been synced)
+                columns = get_target_table_columns(job.target_table)
+                if columns:
+                    logger.debug(f"[SyncJob] Retrieved schema from mdp_raw_store for {job.target_table}: {len(columns)} columns")
+                else:
+                    logger.warning(f"[SyncJob] No schema available for {job.target_table} (not cached and table doesn't exist)")
         
         tables.append(TargetTableInfo(
             target_table=job.target_table,

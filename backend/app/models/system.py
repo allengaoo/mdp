@@ -201,6 +201,7 @@ class SyncJobDef(SQLModel, table=True):
     last_run_status: Optional[str] = Field(default=None, max_length=20)  # SUCCESS, FAILED, RUNNING
     last_run_at: Optional[datetime] = Field(default=None)
     rows_synced: Optional[int] = Field(default=None)
+    cached_schema: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))  # Column schema from source table
     created_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
     updated_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
 
@@ -243,6 +244,7 @@ class SyncJobDefRead(SQLModel):
     last_run_status: Optional[str]
     last_run_at: Optional[datetime]
     rows_synced: Optional[int]
+    cached_schema: Optional[Dict[str, Any]] = None
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
 

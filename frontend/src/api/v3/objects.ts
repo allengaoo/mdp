@@ -71,3 +71,16 @@ export const fetchObjectDefWithStats = async (
     return null;
   }
 };
+
+/**
+ * Delete an object type definition.
+ * 
+ * @param defId - Object type definition ID to delete
+ * @throws Error if deletion fails
+ */
+export const deleteObjectDef = async (defId: string): Promise<void> => {
+  // Use V1 delete endpoint which handles V3 tables internally
+  await v3Client.delete(`/meta/object-types/${defId}`, {
+    baseURL: '/api/v1',  // Override to use V1 endpoint
+  });
+};

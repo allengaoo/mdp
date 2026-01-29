@@ -60,11 +60,32 @@ def _parse_json_field(value) -> Optional[Dict]:
     return None
 
 
+def _build_property_schema_from_v3(properties: List[Dict]) -> Optional[Dict]:
+    """将 V3 属性列表转为 meta 层 ObjectType.property_schema 的字典格式。"""
+    if not properties:
+        return None
+    out = {}
+    for p in properties:
+        api_name = p.get("api_name")
+        if not api_name:
+            continue
+        prop_info = {
+            "label": p.get("display_name") or api_name,
+            "type": p.get("data_type") or "STRING",
+            "required": p.get("is_required", False),
+        }
+        # 仅当关联了共享属性时才包含 shared_property_id
+        if p.get("property_def_id"):
+            prop_info["shared_property_id"] = p.get("property_def_id")
+        out[api_name] = prop_info
+    return out
+
+
 def create_object_type(session: Session, obj_in: ObjectTypeCreate) -> ObjectType:
     """Create a new ObjectType.
     
-    如果底层表 ont_object_type 存在，则写入该表；
-    否则写入 meta_object_type 表（旧架构）。
+    优先使用 V3 架构（meta_object_type_def），如果不存在则使用 ont_object_type，
+    最后才使用旧架构（meta_object_type 表，如果它是表而不是视图）。
     """
     logger.info(f"Creating ObjectType: {obj_in.api_name}")
     
@@ -73,8 +94,131 @@ def create_object_type(session: Session, obj_in: ObjectTypeCreate) -> ObjectType
         now = datetime.now()
         obj_id = str(uuid.uuid4())
         
-        # 检查是否使用新架构
-        if _use_ont_tables(session):
+        # 优先检查 V3 架构表是否存在
+        use_v3_architecture = _check_table_exists(session, "meta_object_type_def")
+        
+        if use_v3_architecture:
+            # 使用 V3 架构：meta_object_type_def + meta_object_type_ver
+            logger.info("Using V3 architecture: writing to meta_object_type_def")
+            from app.engine.v3.ontology_crud import (
+                create_object_type_def,
+                create_object_type_ver
+            )
+            from app.models.ontology import (
+                ObjectTypeDefCreate,
+                ObjectTypeVerCreate
+            )
+            
+            # 创建 ObjectTypeDef
+            obj_def_create = ObjectTypeDefCreate(api_name=obj_in.api_name)
+            obj_def = create_object_type_def(session, obj_def_create)
+            
+            # 创建 ObjectTypeVer
+            obj_ver_create = ObjectTypeVerCreate(
+                def_id=obj_def.id,
+                version_number="v1.0",
+                display_name=obj_in.display_name,
+                description=obj_in.description,
+                status="DRAFT"
+            )
+            obj_ver = create_object_type_ver(session, obj_ver_create, set_as_current=True)
+            
+            # 创建属性绑定（如果有 property_schema）
+            if obj_in.property_schema:
+                from app.engine.v3.ontology_crud import bind_property_to_object_ver
+                from app.models.ontology import ObjectVerPropertyCreate, SharedPropertyDef
+                
+                # 映射前端类型到后端类型
+                type_mapping = {
+                    "STRING": "STRING",
+                    "INTEGER": "INTEGER",
+                    "NUMBER": "DOUBLE",
+                    "DOUBLE": "DOUBLE",
+                    "BOOLEAN": "BOOLEAN",
+                    "DATETIME": "DATE",
+                    "DATE": "DATE",
+                }
+                
+                for prop_key, prop_data in obj_in.property_schema.items():
+                    prop_type = prop_data.get("type", "STRING")
+                    data_type = type_mapping.get(str(prop_type).upper(), "STRING")
+                    
+                    # 只有当用户显式选择了共享属性时才关联
+                    shared_property_id = prop_data.get("shared_property_id")
+                    if shared_property_id:
+                        # 验证共享属性存在
+                        shared_prop = session.get(SharedPropertyDef, shared_property_id)
+                        if not shared_prop:
+                            logger.warning(f"Shared property not found: {shared_property_id}, treating as local property")
+                            shared_property_id = None
+                    
+                    # 绑定属性到对象版本
+                    prop_binding_create = ObjectVerPropertyCreate(
+                        property_def_id=shared_property_id,  # 可为空（本地属性）
+                        local_api_name=prop_key,
+                        local_display_name=prop_data.get("label", prop_key),
+                        local_data_type=data_type,
+                        is_primary_key=(prop_key == "id"),  # 假设 id 是主键
+                        is_required=prop_data.get("required", False)
+                    )
+                    bind_property_to_object_ver(session, obj_ver.id, prop_binding_create)
+            
+            # 如果传了 project_id，创建项目绑定
+            if obj_in.project_id:
+                from app.engine.v3.context_crud import create_project_object_binding
+                from app.models.context import ProjectObjectBindingCreate
+                
+                try:
+                    binding_create = ProjectObjectBindingCreate(
+                        project_id=obj_in.project_id,
+                        object_def_id=obj_def.id,
+                        used_version_id=obj_ver.id,
+                        is_visible=True
+                    )
+                    create_project_object_binding(session, binding_create)
+                    logger.info(f"[V3] Created project binding: project={obj_in.project_id}, object={obj_def.id}")
+                except Exception as e:
+                    logger.warning(f"[V3] Failed to create project binding: {e}")
+                    # 不阻止创建，只记录警告
+            
+            # 如果传了数据源（来自同步任务），创建映射定义以便 Datasource Tab 显示
+            if getattr(obj_in, "source_connection_id", None) and getattr(obj_in, "source_table_name", None):
+                from app.engine.v3.mapping_crud import create_mapping
+                from app.models.context import ObjectMappingDefCreate
+                try:
+                    mapping_create = ObjectMappingDefCreate(
+                        object_def_id=obj_def.id,
+                        source_connection_id=obj_in.source_connection_id,
+                        source_table_name=obj_in.source_table_name,
+                        mapping_spec={"nodes": [], "edges": []},
+                    )
+                    mapping = create_mapping(session, mapping_create)
+                    mapping.status = "PUBLISHED"
+                    session.add(mapping)
+                    session.commit()
+                    logger.info(f"[V3] Created mapping for datasource: object={obj_def.id}, table={obj_in.source_table_name}")
+                except Exception as e:
+                    logger.warning(f"[V3] Failed to create mapping for datasource: {e}")
+                    session.rollback()
+            
+            # 从视图读取返回（保持兼容）
+            result = session.exec(text(
+                "SELECT id, api_name, display_name, description, project_id, created_at, updated_at, property_schema "
+                "FROM meta_object_type WHERE id = :id"
+            ), params={"id": obj_def.id}).first()
+            
+            if result:
+                return ObjectType(
+                    id=result[0],
+                    api_name=result[1],
+                    display_name=result[2],
+                    description=result[3],
+                    project_id=result[4],
+                    created_at=result[5],
+                    updated_at=result[6],
+                    property_schema=_parse_json_field(result[7])
+                )
+        elif _use_ont_tables(session):
             logger.info("Using new architecture: writing to ont_object_type")
             
             # 新架构需要 backing_dataset_id，如果没有则创建一个虚拟的
@@ -131,18 +275,28 @@ def create_object_type(session: Session, obj_in: ObjectTypeCreate) -> ObjectType
                     property_schema=_parse_json_field(result[7])
                 )
         else:
-            # 旧架构：直接写入 meta_object_type 表
-            logger.info("Using old architecture: writing to meta_object_type")
-            if 'created_at' not in obj_data or obj_data['created_at'] is None:
-                obj_data['created_at'] = now
-            if 'updated_at' not in obj_data or obj_data['updated_at'] is None:
-                obj_data['updated_at'] = now
-            db_obj = ObjectType(**obj_data)
-            session.add(db_obj)
-            session.commit()
-            session.refresh(db_obj)
-            logger.info(f"ObjectType created successfully: {obj_in.api_name} (ID: {db_obj.id})")
-            return db_obj
+            # 检查 meta_object_type 是否是表（而不是视图）
+            if _check_table_exists(session, "meta_object_type"):
+                # 旧架构：直接写入 meta_object_type 表
+                logger.info("Using old architecture: writing to meta_object_type table")
+                if 'created_at' not in obj_data or obj_data['created_at'] is None:
+                    obj_data['created_at'] = now
+                if 'updated_at' not in obj_data or obj_data['updated_at'] is None:
+                    obj_data['updated_at'] = now
+                db_obj = ObjectType(**obj_data)
+                session.add(db_obj)
+                session.commit()
+                session.refresh(db_obj)
+                logger.info(f"ObjectType created successfully: {obj_in.api_name} (ID: {db_obj.id})")
+                return db_obj
+            else:
+                # meta_object_type 是视图，无法直接写入
+                # 应该使用 V3 架构，但表不存在，抛出错误
+                raise OperationalError(
+                    "Cannot insert into meta_object_type (it is a view, not a table). "
+                    "Please ensure meta_object_type_def table exists for V3 architecture.",
+                    None, None
+                )
             
     except IntegrityError as e:
         session.rollback()
@@ -180,16 +334,119 @@ def update_object_type(
 ) -> Optional[ObjectType]:
     """Update an existing ObjectType.
     
-    如果底层表 ont_object_type 存在，则更新该表；
-    否则更新 meta_object_type 表（旧架构）。
+    优先使用 V3 架构（meta_object_type_def + meta_object_type_ver），更新版本与属性绑定；
+    否则若 ont_object_type 存在则更新该表；
+    否则更新 meta_object_type 表（旧架构，仅当其为表而非视图时）。
     """
     logger.info(f"Updating ObjectType: {obj_id}")
     
     try:
         update_data = obj_in.model_dump(exclude_unset=True)
         
+        # V3 架构：更新 meta_object_type_ver 与属性绑定，不更新视图 meta_object_type
+        use_v3_architecture = _check_table_exists(session, "meta_object_type_def")
+        if use_v3_architecture:
+            from app.engine.v3.ontology_crud import (
+                get_object_type_def,
+                get_object_type_full,
+                bind_property_to_object_ver,
+                get_object_ver_properties,
+                unbind_property_from_object_ver,
+                update_object_type_ver,
+            )
+            from app.models.ontology import (
+                SharedPropertyDef,
+                ObjectVerPropertyCreate,
+                ObjectTypeVerUpdate,
+            )
+            
+            obj_def = get_object_type_def(session, obj_id)
+            if not obj_def or not obj_def.current_version_id:
+                logger.warning(f"ObjectType or current version not found in V3: {obj_id}")
+                return None
+            
+            ver_id = obj_def.current_version_id
+            # 更新版本基本信息
+            ver_update = ObjectTypeVerUpdate(
+                display_name=update_data.get("display_name"),
+                description=update_data.get("description"),
+            )
+            update_object_type_ver(session, ver_id, ver_update)
+            
+            # 同步属性绑定（property_schema）
+            if "property_schema" in update_data and update_data["property_schema"]:
+                property_schema = update_data["property_schema"]
+                type_mapping = {
+                    "STRING": "STRING", "INTEGER": "INTEGER", "NUMBER": "DOUBLE",
+                    "DOUBLE": "DOUBLE", "BOOLEAN": "BOOLEAN", "DATETIME": "DATE", "DATE": "DATE",
+                }
+                current_bindings = get_object_ver_properties(session, ver_id)
+                current_by_name = {b["api_name"]: b for b in current_bindings}
+                
+                for prop_key, prop_data in property_schema.items():
+                    if not isinstance(prop_data, dict):
+                        continue
+                    prop_type = prop_data.get("type", "STRING")
+                    data_type = type_mapping.get(str(prop_type).upper(), "STRING")
+                    
+                    # 只有当用户显式选择了共享属性时才关联
+                    shared_property_id = prop_data.get("shared_property_id")
+                    if shared_property_id:
+                        shared_prop = session.get(SharedPropertyDef, shared_property_id)
+                        if not shared_prop:
+                            logger.warning(f"Shared property not found: {shared_property_id}, treating as local")
+                            shared_property_id = None
+                    
+                    existing = current_by_name.get(prop_key)
+                    if existing:
+                        # Update existing binding (e.g. change shared property link)
+                        from app.models.ontology import ObjectVerProperty
+                        binding_obj = session.get(ObjectVerProperty, existing["binding_id"])
+                        if binding_obj:
+                            binding_obj.property_def_id = shared_property_id
+                            binding_obj.local_display_name = prop_data.get("label", prop_key)
+                            binding_obj.local_data_type = data_type
+                            binding_obj.is_required = prop_data.get("required", False)
+                            session.add(binding_obj)
+                            session.flush()
+                            logger.info(f"[V3] Updated property binding: api_name={prop_key}, shared_property_id={shared_property_id}")
+                        continue
+                    
+                    # 创建新属性绑定
+                    prop_binding_create = ObjectVerPropertyCreate(
+                        property_def_id=shared_property_id,  # 可为空（本地属性）
+                        local_api_name=prop_key,
+                        local_display_name=prop_data.get("label", prop_key),
+                        local_data_type=data_type,
+                        is_primary_key=(prop_key == "id"),
+                        is_required=prop_data.get("required", False),
+                    )
+                    bind_property_to_object_ver(session, ver_id, prop_binding_create)
+                
+                # 删除不在 property_schema 中的绑定
+                for b in current_bindings:
+                    if b["api_name"] not in property_schema:
+                        unbind_property_from_object_ver(session, b["binding_id"])
+            
+            # 确保所有属性更新都已提交
+            session.commit()
+            
+            full = get_object_type_full(session, obj_id)
+            if full:
+                return ObjectType(
+                    id=full.id,
+                    api_name=full.api_name,
+                    display_name=full.display_name or full.api_name,
+                    description=full.description,
+                    project_id=None,
+                    created_at=obj_def.created_at or datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                    property_schema=_build_property_schema_from_v3(full.properties) if full.properties else None,
+                )
+            return None
+        
         if _use_ont_tables(session):
-            logger.info("Using new architecture: updating ont_object_type")
+            logger.info("Using ont_object_type: updating ont_object_type")
             
             # 检查记录是否存在
             existing = session.exec(text(
@@ -236,7 +493,13 @@ def update_object_type(
                 )
             return None
         else:
-            # 旧架构
+            # 旧架构：仅当 meta_object_type 为表（非视图）时才可更新
+            if not _check_table_exists(session, "meta_object_type"):
+                logger.warning(
+                    "meta_object_type is a view and cannot be updated. "
+                    "Object type was created in V3; updates are applied via meta_object_type_ver."
+                )
+                return None
             db_obj = session.get(ObjectType, obj_id)
             if not db_obj:
                 logger.warning(f"ObjectType not found: {obj_id}")
@@ -264,12 +527,74 @@ def update_object_type(
 def delete_object_type(session: Session, obj_id: str) -> bool:
     """Delete ObjectType by ID.
     
-    如果底层表 ont_object_type 存在，则从该表删除；
-    否则从 meta_object_type 表删除（旧架构）。
+    优先使用 V3 架构：按依赖顺序删除 ObjectVerProperty → ObjectTypeVer → ProjectObjectBinding
+    → ObjectMappingDef → ObjectTypeDef（不操作视图 meta_object_type）；
+    否则若 ont_object_type 存在则从该表删除；
+    否则从 meta_object_type 表删除（仅当其为表而非视图时）。
     """
     logger.info(f"Deleting ObjectType: {obj_id}")
     
     try:
+        # V3 架构：删除 meta_object_type_def 及关联表，不操作视图
+        use_v3_architecture = _check_table_exists(session, "meta_object_type_def")
+        if use_v3_architecture:
+            from app.engine.v3.ontology_crud import (
+                get_object_type_def,
+                list_object_type_vers,
+                get_object_ver_properties,
+                unbind_property_from_object_ver,
+            )
+            from app.models.ontology import ObjectTypeDef
+            from app.engine.v3.context_crud import (
+                get_object_project_bindings,
+                delete_project_object_binding,
+            )
+            from app.engine.v3.mapping_crud import list_mappings, delete_mapping
+            
+            obj_def = get_object_type_def(session, obj_id)
+            if not obj_def:
+                logger.warning(f"ObjectTypeDef not found in V3: {obj_id}")
+                return False
+            
+            # 1. 删除该对象类型下所有版本的属性绑定
+            versions = list_object_type_vers(session, obj_id)
+            for ver in versions:
+                props = get_object_ver_properties(session, ver.id)
+                for p in props:
+                    unbind_property_from_object_ver(session, p["binding_id"])
+            
+            # 2. 删除项目绑定（必须在删除版本之前，因 used_version_id 外键约束）
+            bindings = get_object_project_bindings(session, obj_id)
+            for b in bindings:
+                delete_project_object_binding(session, b.project_id, b.object_def_id)
+            
+            # 3. 删除映射定义
+            mappings = list_mappings(session, object_def_id=obj_id)
+            for m in mappings:
+                delete_mapping(session, m.id)
+            
+            # 4. 清除 def 的 current_version_id（必须在删除版本之前）
+            obj_def = session.get(ObjectTypeDef, obj_id)
+            if obj_def:
+                obj_def.current_version_id = None
+                session.add(obj_def)
+                session.commit()
+            
+            # 5. 删除所有版本（重新查询，因上一步可能已 commit）
+            versions = list_object_type_vers(session, obj_id)
+            for ver in versions:
+                session.delete(ver)
+            session.commit()
+            
+            # 6. 删除 ObjectTypeDef
+            obj_def = session.get(ObjectTypeDef, obj_id)
+            if obj_def:
+                session.delete(obj_def)
+                session.commit()
+            
+            logger.info(f"ObjectType (V3) deleted successfully: {obj_id}")
+            return True
+        
         if _use_ont_tables(session):
             logger.info("Using new architecture: deleting from ont_object_type")
             
@@ -296,6 +621,13 @@ def delete_object_type(session: Session, obj_id: str) -> bool:
             logger.info(f"ObjectType deleted successfully: {obj_id}")
             return True
         else:
+            # 旧架构：仅当 meta_object_type 为表（非视图）时才可删除
+            if not _check_table_exists(session, "meta_object_type"):
+                logger.warning(
+                    "meta_object_type is a view and cannot be deleted. "
+                    "Object type lives in V3; use V3 delete (ObjectTypeDef and related tables)."
+                )
+                return False
             db_obj = session.get(ObjectType, obj_id)
             if not db_obj:
                 logger.warning(f"ObjectType not found: {obj_id}")

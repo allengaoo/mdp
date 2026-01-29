@@ -73,13 +73,20 @@ class ObjectVerProperty(SQLModel, table=True):
     """Object version to property binding relationship.
     
     Maps to table: rel_object_ver_property
+    
+    属性可以是：
+    1. 本地属性：property_def_id 为空，使用 local_* 字段存储类型和名称
+    2. 共享属性引用：property_def_id 指向 SharedPropertyDef，复用其定义
     """
     __tablename__ = "rel_object_ver_property"
     
     id: Optional[int] = Field(default=None, primary_key=True)
     object_ver_id: str = Field(foreign_key="meta_object_type_ver.id", max_length=36)
-    property_def_id: str = Field(foreign_key="meta_shared_property_def.id", max_length=36)
-    local_api_name: Optional[str] = Field(default=None, max_length=100)  # Local alias
+    # 可选：若关联共享属性则设置；若为本地属性则为空
+    property_def_id: Optional[str] = Field(default=None, max_length=36)
+    local_api_name: Optional[str] = Field(default=None, max_length=100)  # 属性 API 名
+    local_display_name: Optional[str] = Field(default=None, max_length=100)  # 本地属性显示名
+    local_data_type: Optional[str] = Field(default=None, max_length=50)  # 本地属性数据类型
     is_primary_key: bool = Field(default=False)
     is_required: bool = Field(default=False)
     is_title: bool = Field(default=False)  # Display as object title
@@ -275,9 +282,15 @@ class ObjectTypeFullRead(SQLModel):
 # ==========================================
 
 class ObjectVerPropertyCreate(SQLModel):
-    """DTO for binding property to object version."""
-    property_def_id: str = Field(max_length=36)
+    """DTO for binding property to object version.
+    
+    可以是本地属性（property_def_id 为空，使用 local_* 字段）
+    或共享属性引用（property_def_id 指向共享属性）。
+    """
+    property_def_id: Optional[str] = Field(default=None, max_length=36)  # 可选：关联共享属性
     local_api_name: Optional[str] = Field(default=None, max_length=100)
+    local_display_name: Optional[str] = Field(default=None, max_length=100)  # 本地显示名
+    local_data_type: Optional[str] = Field(default=None, max_length=50)  # 本地数据类型
     is_primary_key: bool = False
     is_required: bool = False
     is_title: bool = False

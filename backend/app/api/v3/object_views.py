@@ -316,9 +316,25 @@ async def _fetch_object_properties(
         if result and result[0]:
             import json
             props = result[0]
+            # Handle bytes
+            if isinstance(props, bytes):
+                props = props.decode('utf-8')
+            
+            # Handle string (parse JSON)
             if isinstance(props, str):
-                props = json.loads(props)
-            return props
+                try:
+                    props = json.loads(props)
+                except json.JSONDecodeError:
+                    pass
+            
+            # Handle double-encoded JSON string if necessary
+            if isinstance(props, str):
+                try:
+                    props = json.loads(props)
+                except json.JSONDecodeError:
+                    pass
+            
+            return props if isinstance(props, dict) else {}
     except Exception as e:
         print(f"Error fetching properties: {e}")
     

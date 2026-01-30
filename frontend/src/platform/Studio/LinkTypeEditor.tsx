@@ -395,7 +395,16 @@ const LinkTypeEditor: React.FC<LinkTypeEditorProps> = ({
         if (existingMapping) {
           await updateLinkMapping(existingMapping.id, mappingPayload);
         } else {
-          await createLinkMapping(mappingPayload);
+          // Fix type mismatch: link_def_id can be undefined in linkType, but required in createLinkMapping
+          if (!linkType?.id) {
+            message.error('Link type ID is missing');
+            return;
+          }
+          const createPayload = {
+            ...mappingPayload,
+            link_def_id: linkType.id
+          };
+          await createLinkMapping(createPayload);
         }
       }
 

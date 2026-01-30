@@ -851,6 +851,34 @@ def delete_link_type(session: Session, obj_id: str) -> bool:
             logger.info(f"LinkType deleted successfully: {obj_id}")
             return True
         else:
+            # 旧架构：仅当 meta_link_type 为表（非视图）时才可删除
+            if not _check_table_exists(session, "meta_link_type"):
+                logger.warning(
+                    "meta_link_type is a view and cannot be deleted. "
+                    "Link type lives in V3; use V3 delete (LinkTypeDef and related tables)."
+                )
+                # 尝试使用 V3 逻辑删除 (LinkTypeDef)
+                # 注意：这里假设如果 meta_link_type 是视图，则必然存在 meta_link_type_def
+                from app.models.ontology import LinkTypeDef, LinkTypeVer
+                
+                link_def = session.get(LinkTypeDef, obj_id)
+                if not link_def:
+                    logger.warning(f"LinkTypeDef not found: {obj_id}")
+                    return False
+                
+                # 1. 删除所有版本
+                versions = session.exec(select(LinkTypeVer).where(LinkTypeVer.def_id == obj_id)).all()
+                for ver in versions:
+                    session.delete(ver)
+                session.flush()  # Ensure versions are deleted before definition
+                
+                # 2. 删除定义
+                session.delete(link_def)
+                
+                session.commit()
+                logger.info(f"LinkType (V3) deleted successfully: {obj_id}")
+                return True
+
             db_obj = session.get(LinkType, obj_id)
             if not db_obj:
                 logger.warning(f"LinkType not found: {obj_id}")

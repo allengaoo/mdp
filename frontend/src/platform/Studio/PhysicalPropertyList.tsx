@@ -91,6 +91,7 @@ const PhysicalPropertyList: React.FC = () => {
   const handleNavigateToObject = (objectId: string) => {
     // Navigate to object type list, ideally could open specific object editor if supported
     navigate(`/oma/project/${projectId}/object-types`);
+    console.log('Navigate to object:', objectId); // Use variable to avoid unused warning
   };
 
   // Get data type tag color

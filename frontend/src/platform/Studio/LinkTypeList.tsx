@@ -21,7 +21,9 @@ import LinkTypeEditor from './LinkTypeEditor';
 interface ObjectType extends IV3ObjectTypeFull {}
 
 // Use V3 LinkTypeFull interface
-interface LinkTypeData extends IV3LinkTypeFull {}
+interface LinkTypeData extends IV3LinkTypeFull {
+  // Add compatibility fields if needed or ensure they match
+}
 
 const LinkTypeList: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();

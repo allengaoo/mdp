@@ -167,6 +167,7 @@ export const fetchLinkTypes = async (): Promise<ILinkType[]> => {
 
 export interface IDataSourceTable {
   id: string;
+  connection_id?: string; // V3 field
   table_name: string;
   db_type: string;
   columns_schema: Array<{

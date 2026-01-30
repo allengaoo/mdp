@@ -1,6 +1,9 @@
 /**
  * Shared Property Modal component.
  * Reusable modal for both Create and Edit modes.
+ * 
+ * @note V3 Migration: Now uses V3 API for create/update operations.
+ * V3 does not have formatter field, constraints stored in description as workaround.
  */
 import React, { useState, useEffect } from 'react';
 import {
@@ -17,8 +20,7 @@ import {
   message,
 } from 'antd';
 import { CheckCircleOutlined, DatabaseOutlined } from '@ant-design/icons';
-import apiClient from '../../api/axios';
-import { useParams } from 'react-router-dom';
+import { createSharedProperty, updateSharedProperty } from '../../api/v3/ontology';
 
 const { TextArea } = Input;
 
@@ -56,7 +58,7 @@ const SharedPropertyModal: React.FC<SharedPropertyModalProps> = ({
   onCancel,
   onSuccess,
 }) => {
-  const { projectId } = useParams<{ projectId: string }>();
+  // Note: V3 shared properties are global (not project-scoped)
   const [form] = Form.useForm();
   const [selectedType, setSelectedType] = useState<string>('STRING');
   const [loading, setLoading] = useState(false);
@@ -125,7 +127,7 @@ const SharedPropertyModal: React.FC<SharedPropertyModalProps> = ({
     });
   };
 
-  // Handle submit
+  // Handle submit (using V3 API)
   const handleSubmit = async () => {
     try {
       setLoading(true);
@@ -142,30 +144,32 @@ const SharedPropertyModal: React.FC<SharedPropertyModalProps> = ({
         if (values.max_value !== undefined) constraints.max_value = values.max_value;
       }
 
-      // Store constraints as JSON string in formatter field
-      const constraintsJson = Object.keys(constraints).length > 0 ? JSON.stringify(constraints) : null;
-      const formatterValue = constraintsJson || values.formatter || null;
+      // V3 API: Store constraints in description as JSON suffix (workaround for no formatter field)
+      const constraintsJson = Object.keys(constraints).length > 0 ? JSON.stringify(constraints) : '';
+      const baseDescription = values.description || '';
+      const fullDescription = constraintsJson 
+        ? `${baseDescription}\n[CONSTRAINTS:${constraintsJson}]`
+        : baseDescription;
 
       if (mode === 'create') {
-        const payload = {
-          project_id: projectId || '',
+        // Use V3 API for create
+        await createSharedProperty({
           api_name: values.api_name,
           display_name: values.display_name,
           data_type: selectedType,
-          formatter: formatterValue,
-          description: values.description || null,
-        };
-        await apiClient.post('/meta/shared-properties', payload);
+          description: fullDescription || null,
+        });
         message.success('Shared property created successfully');
       } else {
-        const payload = {
-          display_name: values.display_name,
-          data_type: selectedType,
-          formatter: formatterValue,
-          description: values.description || null,
-        };
-        await apiClient.put(`/meta/shared-properties/${property?.id}`, payload);
-        message.success('Shared property updated successfully');
+        // Use V3 API for update
+        if (property?.id) {
+          await updateSharedProperty(property.id, {
+            display_name: values.display_name,
+            data_type: selectedType,
+            description: fullDescription || null,
+          });
+          message.success('Shared property updated successfully');
+        }
       }
       onSuccess();
       handleCancel();

@@ -57,6 +57,8 @@ class ObjectTypeRequest(BaseModel):
     project_id: Optional[str] = Field(default=None, max_length=36, description="Project ID")
     property_schema: List[PropertyDef] = Field(default_factory=list, description="List of property definitions")
     description: Optional[str] = Field(default=None, max_length=500, description="Optional description")
+    source_connection_id: Optional[str] = Field(default=None, max_length=36, description="Connection ID for datasource (from sync job)")
+    source_table_name: Optional[str] = Field(default=None, max_length=100, description="Source table name in mdp_raw_store (from sync job target_table)")
     
     class Config:
         json_schema_extra = {
@@ -132,23 +134,25 @@ class ActionRunRequest(BaseModel):
 class ProjectResponse(BaseModel):
     """Response model for Project with aggregated statistics."""
     id: str = Field(..., description="Project ID")
-    title: str = Field(..., description="Project name (mapped from 'name')")
+    name: str = Field(..., description="Project name")
     description: Optional[str] = Field(default=None, description="Project description")
     tags: List[str] = Field(default_factory=list, description="Project tags (default empty)")
-    objectCount: int = Field(..., description="Number of object types in this project")
-    linkCount: int = Field(..., description="Number of link types in this project")
-    updatedAt: Optional[datetime] = Field(default=None, description="Last update time (mapped from created_at)")
+    object_count: int = Field(..., description="Number of object types in this project")
+    link_count: int = Field(..., description="Number of link types in this project")
+    created_at: Optional[datetime] = Field(default=None, description="Creation time")
+    updated_at: Optional[datetime] = Field(default=None, description="Last update time")
     
     class Config:
         json_schema_extra = {
             "example": {
                 "id": "00000000-0000-0000-0000-000000000001",
-                "title": "Battlefield System",
+                "name": "Battlefield System",
                 "description": "军事战场场景本体",
                 "tags": ["军事", "战场", "演示"],
-                "objectCount": 12,
-                "linkCount": 12,
-                "updatedAt": "2024-01-15T14:30:00"
+                "object_count": 12,
+                "link_count": 12,
+                "created_at": "2024-01-15T14:30:00",
+                "updated_at": "2024-01-15T14:30:00"
             }
         }
 

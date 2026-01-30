@@ -66,17 +66,20 @@ class DataSourceTableRead(SQLModel):
 # ==========================================
 
 class ExecutionLog(SQLModel, table=True):
-    """Action execution log record."""
+    """Action execution log record.
+    
+    Maps to database table: sys_action_log
+    """
     __tablename__ = "sys_action_log"
     
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     project_id: str = Field(index=True, max_length=36)
     action_def_id: str = Field(index=True, max_length=36)
-    source_object_id: Optional[str] = Field(default=None, max_length=36)
-    execution_status: str = Field(default="SUCCESS", index=True, max_length=20)  # SUCCESS, FAILED
-    duration_ms: Optional[int] = Field(default=None)
+    trigger_user_id: Optional[str] = Field(default=None, max_length=36)  # 触发用户
+    input_params: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))  # 执行入参
+    execution_status: str = Field(default="SUCCESS", max_length=20)  # SUCCESS, FAILED
     error_message: Optional[str] = Field(default=None)
-    request_params: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
+    duration_ms: Optional[int] = Field(default=None)  # 执行耗时
     created_at: Optional[datetime] = Field(default_factory=datetime.utcnow, index=True)
 
 
@@ -88,11 +91,11 @@ class ExecutionLogCreate(SQLModel):
     """DTO for creating ExecutionLog."""
     project_id: str
     action_def_id: str
-    source_object_id: Optional[str] = None
+    trigger_user_id: Optional[str] = None
+    input_params: Optional[Dict[str, Any]] = None
     execution_status: str = "SUCCESS"
     duration_ms: Optional[int] = None
     error_message: Optional[str] = None
-    request_params: Optional[Dict[str, Any]] = None
 
 
 class ExecutionLogRead(SQLModel):
@@ -101,9 +104,9 @@ class ExecutionLogRead(SQLModel):
     project_id: str
     action_def_id: str
     action_name: Optional[str] = None  # Populated from ActionDefinition join
-    source_object_id: Optional[str]
+    trigger_user_id: Optional[str]
+    input_params: Optional[Dict[str, Any]]
     execution_status: str
     duration_ms: Optional[int]
     error_message: Optional[str]
-    request_params: Optional[Dict[str, Any]]
     created_at: Optional[datetime]

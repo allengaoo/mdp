@@ -21,12 +21,15 @@ import { InboxOutlined } from '@ant-design/icons';
 import type { UploadProps } from 'antd';
 import { useParams } from 'react-router-dom';
 import {
-  fetchDatasources,
   fetchSharedProperties,
   createObjectType,
   IDataSourceTable,
   ISharedProperty,
 } from '../../api/ontology';
+import {
+  fetchTargetTables,
+  ITargetTableInfo,
+} from '../../api/v3/connectors';
 
 const { Step } = Steps;
 const { TextArea } = Input;
@@ -60,24 +63,25 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
   const [propertyMappings, setPropertyMappings] = useState<PropertyMapping[]>([]);
   const [uploadedColumns, setUploadedColumns] = useState<IDataSourceTable['columns_schema']>([]);
   const [loading, setLoading] = useState(false);
-  const [datasources, setDatasources] = useState<IDataSourceTable[]>([]);
   const [sharedProperties, setSharedProperties] = useState<ISharedProperty[]>([]);
+  const [targetTables, setTargetTables] = useState<ITargetTableInfo[]>([]);
+  const [selectedTargetTable, setSelectedTargetTable] = useState<ITargetTableInfo | null>(null);
   const [loadingData, setLoadingData] = useState(false);
   // Store form values from Step 1 to ensure they're available when creating
   const [step1Values, setStep1Values] = useState<{ api_name?: string; display_name?: string; description?: string }>({});
 
-  // Fetch datasources and shared properties on mount
+  // Fetch shared properties and target tables on mount
   useEffect(() => {
     if (visible) {
       const loadData = async () => {
         try {
           setLoadingData(true);
-          const [datasourcesData, sharedPropsData] = await Promise.all([
-            fetchDatasources(),
-            fetchSharedProperties(projectId),
+          const [sharedPropsData, targetTablesData] = await Promise.all([
+            fetchSharedProperties(),
+            fetchTargetTables(true, false), // include columns, don't require synced
           ]);
-          setDatasources(datasourcesData);
           setSharedProperties(sharedPropsData);
+          setTargetTables(targetTablesData.tables || []);
         } catch (error: any) {
           message.error(error.response?.data?.detail || 'Failed to load data');
         } finally {
@@ -117,24 +121,38 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
     setStep1Values((prev: { api_name?: string; display_name?: string; description?: string }) => ({ ...prev, description }));
   };
 
-  // Handle data source selection
-  const handleDataSourceSelect = (record: IDataSourceTable) => {
-    setSelectedDataSource(record);
-    // Parse columns_schema if it's a string
-    const columns = Array.isArray(record.columns_schema)
-      ? record.columns_schema
-      : typeof record.columns_schema === 'string'
-      ? JSON.parse(record.columns_schema)
-      : [];
+  // Handle target table selection (from sync jobs)
+  const handleTargetTableSelect = (record: ITargetTableInfo) => {
+    setSelectedTargetTable(record);
+    setSelectedDataSource(null); // Clear catalog selection
+    
+    // Use columns from target table
+    const columns = record.columns || [];
+    
+    // Check if table has column information
+    if (columns.length === 0) {
+      // Clear previous columns and mappings
+      setAvailableColumns([]);
+      setPropertyMappings([]);
+      message.warning(
+        `目标表 "${record.target_table}" 暂无列信息。请先在连接器管理页面执行同步任务，然后再选择此表。`,
+        6
+      );
+      return;
+    }
+    
     setAvailableColumns(columns);
+    
     // Initialize property mappings
-    const mappings: PropertyMapping[] = columns.map((col: { name: string; type: string }) => ({
+    const mappings: PropertyMapping[] = columns.map((col) => ({
       rawColumn: col.name,
       propertyName: col.name,
       type: mapColumnTypeToPropertyType(col.type),
       useSharedProperty: undefined,
     }));
     setPropertyMappings(mappings);
+    
+    message.success(`已选择目标表: ${record.target_table} (${columns.length} 列)`);
   };
 
   // Map database column type to property type
@@ -150,29 +168,129 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
     return typeMap[dbType.toLowerCase()] || 'string';
   };
 
-  // Handle CSV upload (mock)
+  // Infer data type from CSV value
+  const inferDataType = (value: string): string => {
+    if (!value || value.trim() === '') return 'varchar';
+    const trimmed = value.trim();
+    
+    // Check for integer
+    if (/^-?\d+$/.test(trimmed)) return 'int';
+    
+    // Check for float/double
+    if (/^-?\d+\.\d+$/.test(trimmed)) return 'decimal';
+    
+    // Check for boolean
+    if (/^(true|false|yes|no|1|0)$/i.test(trimmed)) return 'boolean';
+    
+    // Check for datetime (ISO format or common date formats)
+    if (/^\d{4}-\d{2}-\d{2}(T|\s)\d{2}:\d{2}:\d{2}/.test(trimmed)) return 'datetime';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return 'date';
+    
+    // Default to varchar with estimated length
+    const len = trimmed.length;
+    return len > 255 ? 'text' : 'varchar';
+  };
+
+  // Parse CSV file and extract columns with type inference
+  const parseCSVFile = (file: File): Promise<Array<{ name: string; type: string; length?: number }>> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const text = e.target?.result as string;
+          const lines = text.split(/\r?\n/).filter(line => line.trim());
+          
+          if (lines.length === 0) {
+            reject(new Error('CSV file is empty'));
+            return;
+          }
+
+          // Parse header line
+          const headers = lines[0].split(',').map(h => h.trim().replace(/^["']|["']$/g, ''));
+          
+          // Analyze first few data rows to infer types
+          const sampleRows = lines.slice(1, Math.min(6, lines.length));
+          const columnTypes: Record<string, string[]> = {};
+          
+          headers.forEach(header => {
+            columnTypes[header] = [];
+          });
+
+          sampleRows.forEach(row => {
+            // Simple CSV parsing (handles basic cases, not quoted commas)
+            const values = row.split(',').map(v => v.trim().replace(/^["']|["']$/g, ''));
+            headers.forEach((header, idx) => {
+              if (values[idx] !== undefined) {
+                columnTypes[header].push(inferDataType(values[idx]));
+              }
+            });
+          });
+
+          // Determine final type for each column (most common non-varchar type)
+          const columns = headers.map(header => {
+            const types = columnTypes[header];
+            const typeCounts: Record<string, number> = {};
+            types.forEach(t => {
+              typeCounts[t] = (typeCounts[t] || 0) + 1;
+            });
+            
+            // Find most common type, preferring specific types over varchar
+            let finalType = 'varchar';
+            let maxCount = 0;
+            Object.entries(typeCounts).forEach(([type, count]) => {
+              if (type !== 'varchar' && count >= maxCount) {
+                finalType = type;
+                maxCount = count;
+              }
+            });
+            
+            // If all values are varchar or empty, use varchar
+            if (maxCount === 0) finalType = 'varchar';
+
+            return {
+              name: header.toLowerCase().replace(/[^a-z0-9_]/g, '_'),
+              type: finalType,
+              length: finalType === 'varchar' ? 255 : undefined,
+            };
+          });
+
+          resolve(columns);
+        } catch (err) {
+          reject(err);
+        }
+      };
+      reader.onerror = () => reject(new Error('Failed to read file'));
+      reader.readAsText(file);
+    });
+  };
+
+  // Handle CSV upload - real parsing
   const uploadProps: UploadProps = {
     name: 'file',
     multiple: false,
     accept: '.csv',
-    beforeUpload: (file) => {
-      // Mock: simulate parsing CSV and extracting columns
-      const mockColumns: Array<{ name: string; type: string; length?: number; precision?: number; scale?: number }> = [
-        { name: 'id', type: 'varchar', length: 36 },
-        { name: 'name', type: 'varchar', length: 100 },
-        { name: 'value', type: 'int' },
-        { name: 'created_at', type: 'datetime' },
-      ];
-      setUploadedColumns(mockColumns);
-      setAvailableColumns(mockColumns);
-      const mappings: PropertyMapping[] = mockColumns.map((col: { name: string; type: string }) => ({
-        rawColumn: col.name,
-        propertyName: col.name,
-        type: mapColumnTypeToPropertyType(col.type),
-        useSharedProperty: undefined,
-      }));
-      setPropertyMappings(mappings);
-      message.success(`File ${file.name} uploaded successfully (mock)`);
+    beforeUpload: async (file) => {
+      try {
+        const columns = await parseCSVFile(file);
+        
+        if (columns.length === 0) {
+          message.error('No columns found in CSV file');
+          return false;
+        }
+
+        setUploadedColumns(columns);
+        setAvailableColumns(columns);
+        const mappings: PropertyMapping[] = columns.map((col) => ({
+          rawColumn: col.name,
+          propertyName: col.name,
+          type: mapColumnTypeToPropertyType(col.type),
+          useSharedProperty: undefined,
+        }));
+        setPropertyMappings(mappings);
+        message.success(`成功解析 ${file.name}，检测到 ${columns.length} 个列`);
+      } catch (err: any) {
+        message.error(`解析 CSV 失败: ${err.message || '未知错误'}`);
+      }
       return false; // Prevent actual upload
     },
   };
@@ -223,8 +341,19 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
         await form.validateFields(['display_name', 'api_name', 'description']);
         return true;
       } else if (currentStep === 1) {
-        if (availableColumns.length === 0) {
-          message.error('Please select a data source or upload a CSV file');
+        // Check if user has selected a target table, data source, or uploaded CSV
+        if (!selectedTargetTable && !selectedDataSource && uploadedColumns.length === 0) {
+          message.error('请选择数据源：从同步任务选择目标表或上传 CSV 文件');
+          return false;
+        }
+        // If selected target table but no columns available, prevent continuing
+        if (selectedTargetTable && availableColumns.length === 0) {
+          message.error('所选目标表暂无列信息，请先执行同步任务或选择其他表');
+          return false;
+        }
+        // If uploaded CSV but no columns, prevent continuing
+        if (uploadedColumns.length > 0 && availableColumns.length === 0) {
+          message.error('CSV 文件解析失败，请检查文件格式');
           return false;
         }
         return true;
@@ -321,6 +450,10 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
         description: values.description || null,
         property_schema: propertySchema,
         project_id: projectId || null,
+        ...(selectedTargetTable && {
+          source_connection_id: selectedTargetTable.connection_id,
+          source_table_name: selectedTargetTable.target_table,
+        }),
       };
 
       console.log('Creating object type with payload:', JSON.stringify(payload, null, 2));
@@ -355,6 +488,7 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
     form.resetFields();
     setCurrentStep(0);
     setSelectedDataSource(null);
+    setSelectedTargetTable(null);
     setAvailableColumns([]);
     setPrimaryKey('');
     setPropertyMappings([]);
@@ -362,20 +496,6 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
     setStep1Values({}); // Reset saved values
     onCancel();
   };
-
-  // Data source table columns
-  const datasourceColumns = [
-    {
-      title: 'Table Name',
-      dataIndex: 'table_name',
-      key: 'table_name',
-    },
-    {
-      title: 'DB Type',
-      dataIndex: 'db_type',
-      key: 'db_type',
-    },
-  ];
 
   // Property mapping table columns
   const mappingColumns = [
@@ -393,7 +513,7 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
         <Input
           value={record.propertyName}
           onChange={(e) => handlePropertyMappingChange(index, 'propertyName', e.target.value)}
-          disabled={!!record.useSharedProperty}
+          disabled={!!record.useSharedProperty || record.rawColumn === primaryKey}
         />
       ),
     },
@@ -405,7 +525,7 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
         <Select
           value={record.type}
           onChange={(value) => handlePropertyMappingChange(index, 'type', value)}
-          disabled={!!record.useSharedProperty}
+          disabled={!!record.useSharedProperty || record.rawColumn === primaryKey}
           style={{ width: '100%' }}
         >
           <Select.Option value="string">String</Select.Option>
@@ -427,6 +547,7 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
           allowClear
           placeholder="None"
           style={{ width: '100%' }}
+          disabled={record.rawColumn === primaryKey}
         >
           {sharedProperties.map((prop) => (
             <Select.Option key={prop.api_name} value={prop.api_name}>
@@ -481,23 +602,79 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
         <div>
           <Alert
             message="Data Source Selection"
-            description="The Ontology layer abstracts logical entities from raw data sources. Select a data source or upload a CSV file to define the column structure."
+            description="选择数据源来定义对象类型的列结构。推荐从同步任务的目标表中选择，以确保数据已同步到系统中。"
             type="info"
             showIcon
             style={{ marginBottom: 24 }}
           />
-          <Tabs>
-            <Tabs.TabPane tab="Upload CSV" key="csv">
+          <Tabs defaultActiveKey="sync-tables">
+            <Tabs.TabPane tab="从同步任务选择" key="sync-tables">
+              {loadingData ? (
+                <div style={{ textAlign: 'center', padding: '40px' }}>加载中...</div>
+              ) : targetTables.length === 0 ? (
+                <Alert
+                  message="暂无可用的目标表"
+                  description="请先在连接器管理页面的数据探索中创建同步任务，然后再返回此处选择。"
+                  type="warning"
+                  showIcon
+                />
+              ) : (
+                <Table
+                  columns={[
+                    {
+                      title: '目标表名',
+                      dataIndex: 'target_table',
+                      key: 'target_table',
+                    },
+                    {
+                      title: '连接器',
+                      dataIndex: 'connection_name',
+                      key: 'connection_name',
+                    },
+                    {
+                      title: '同步任务',
+                      dataIndex: 'sync_job_name',
+                      key: 'sync_job_name',
+                    },
+                    {
+                      title: '同步状态',
+                      dataIndex: 'last_sync_status',
+                      key: 'last_sync_status',
+                      render: (status: string | null) => {
+                        if (!status) return <span style={{ color: '#999' }}>未执行</span>;
+                        const color = status === 'SUCCESS' ? 'green' : status === 'FAILED' ? 'red' : 'blue';
+                        return <span style={{ color }}>{status}</span>;
+                      },
+                    },
+                    {
+                      title: '列数',
+                      key: 'columns_count',
+                      render: (_: any, record: ITargetTableInfo) => record.columns?.length || 0,
+                    },
+                  ]}
+                  dataSource={targetTables}
+                  rowKey="target_table"
+                  rowSelection={{
+                    type: 'radio',
+                    selectedRowKeys: selectedTargetTable ? [selectedTargetTable.target_table] : [],
+                    onSelect: (record) => handleTargetTableSelect(record),
+                  }}
+                  pagination={false}
+                  size="small"
+                />
+              )}
+            </Tabs.TabPane>
+            <Tabs.TabPane tab="上传 CSV" key="csv">
               <Dragger {...uploadProps}>
                 <p className="ant-upload-drag-icon">
                   <InboxOutlined />
                 </p>
-                <p className="ant-upload-text">Click or drag file to this area to upload</p>
-                <p className="ant-upload-hint">Support for CSV files only</p>
+                <p className="ant-upload-text">点击或拖拽文件到此处上传</p>
+                <p className="ant-upload-hint">仅支持 CSV 文件</p>
               </Dragger>
               {uploadedColumns.length > 0 && (
                 <div style={{ marginTop: 16 }}>
-                  <p>Detected columns:</p>
+                  <p>检测到的列:</p>
                   <ul>
               {Array.isArray(uploadedColumns) && uploadedColumns.map((col: { name: string; type: string }) => (
                 <li key={col.name}>
@@ -506,24 +683,6 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
               ))}
                   </ul>
                 </div>
-              )}
-            </Tabs.TabPane>
-            <Tabs.TabPane tab="Select from Catalog" key="catalog">
-              {loadingData ? (
-                <div style={{ textAlign: 'center', padding: '40px' }}>Loading datasources...</div>
-              ) : (
-                <Table
-                  columns={datasourceColumns}
-                  dataSource={datasources}
-                  rowKey="id"
-                  rowSelection={{
-                    type: 'radio',
-                    selectedRowKeys: selectedDataSource ? [selectedDataSource.id] : [],
-                    onSelect: (record) => handleDataSourceSelect(record),
-                  }}
-                  pagination={false}
-                  loading={loadingData}
-                />
               )}
             </Tabs.TabPane>
           </Tabs>
@@ -554,6 +713,9 @@ const ObjectTypeWizard: React.FC<ObjectTypeWizardProps> = ({
             rowKey="rawColumn"
             pagination={false}
             size="small"
+            onRow={(record) => ({
+              style: record.rawColumn === primaryKey ? { background: '#fafafa' } : {},
+            })}
           />
         </div>
       )}

@@ -1,6 +1,9 @@
 /**
  * Link Type Editor component.
  * Single modal with reactive sections based on Cardinality changes.
+ * 
+ * @note V3 Migration: Read operations use V3 API (via api/ontology.ts adapters).
+ * Update operation still uses V1 API (TODO: migrate when V3 endpoint is available).
  */
 import React, { useState, useEffect } from 'react';
 import {
@@ -16,13 +19,19 @@ import {
   Divider,
 } from 'antd';
 import { useParams } from 'react-router-dom';
-import apiClient from '../../api/axios';
+import apiClient from '../../api/axios'; // TODO: Remove when V3 updateLinkType is available
 import {
   fetchObjectTypes,
   fetchDatasources,
   IObjectType,
   IDataSourceTable,
 } from '../../api/ontology';
+import {
+  createLinkMapping,
+  getLinkMappingByDefId,
+  updateLinkMapping,
+  ILinkMapping,
+} from '../../api/v3/ontology';
 
 // ObjectType interface is now imported from API
 // RawTable interface is now IDataSourceTable from API
@@ -38,9 +47,9 @@ interface LinkTypeData {
   id: string;
   api_name: string;
   display_name: string;
-  description?: string;
-  source_type_id: string;
-  target_type_id: string;
+  description?: string | null;
+  source_object_def_id: string;
+  target_object_def_id: string;
   cardinality: string;
 }
 
@@ -82,6 +91,7 @@ const LinkTypeEditor: React.FC<LinkTypeEditorProps> = ({
   const [objectTypes, setObjectTypes] = useState<IObjectType[]>([]);
   const [datasources, setDatasources] = useState<IDataSourceTable[]>([]);
   const [dataLoading, setDataLoading] = useState(false);
+  const [existingMapping, setExistingMapping] = useState<ILinkMapping | null>(null);
 
   // Fetch object types and datasources when modal opens
   useEffect(() => {
@@ -95,6 +105,12 @@ const LinkTypeEditor: React.FC<LinkTypeEditorProps> = ({
           ]);
           setObjectTypes(objectTypesData);
           setDatasources(datasourcesData);
+
+          // If editing existing link type, fetch mapping
+          if (linkType) {
+            const mapping = await getLinkMappingByDefId(linkType.id);
+            setExistingMapping(mapping);
+          }
         } catch (error: any) {
           message.error(error.response?.data?.detail || 'Failed to load data');
           console.error('Error loading data:', error);
@@ -104,7 +120,7 @@ const LinkTypeEditor: React.FC<LinkTypeEditorProps> = ({
       };
       loadData();
     }
-  }, [visible, projectId]);
+  }, [visible, projectId, linkType]);
 
   // Initialize form when linkType changes
   useEffect(() => {
@@ -112,16 +128,73 @@ const LinkTypeEditor: React.FC<LinkTypeEditorProps> = ({
       form.setFieldsValue({
         display_name: linkType.display_name,
         // Note: description field removed - not in database schema
-        source_type_id: linkType.source_type_id,
-        target_type_id: linkType.target_type_id,
+        source_object_def_id: linkType.source_object_def_id,
+        target_object_def_id: linkType.target_object_def_id,
         cardinality: linkType.cardinality,
       });
       setCardinality(linkType.cardinality);
       
-      // Initialize join table and properties if M:N
-      // Note: Since mapping_config is not stored in DB, we initialize with empty/default values
-      if (linkType.cardinality === 'MANY_TO_MANY') {
-        // If datasources are loaded, use the first one as default (if available)
+      // Initialize join table and properties if M:N and mapping exists
+      if (linkType.cardinality === 'MANY_TO_MANY' && existingMapping) {
+        // Find the table in datasources (might need to fetch if not loaded)
+        // Assuming datasources are loaded by the time existingMapping is set
+        const table = datasources.find(t => t.id === existingMapping.source_connection_id); // Note: source_connection_id might be connection ID, not table ID. 
+        // Actually IDataSourceTable.id is usually connection_id or similar. 
+        // Let's assume datasources list contains tables with IDs that match what we store.
+        // Wait, IDataSourceTable usually has `id` as connection_id or a unique ID.
+        // Let's check IDataSourceTable definition.
+        // It seems fetchDatasources returns tables.
+        
+        // Let's try to match by table name if ID doesn't match directly, or just use the ID stored.
+        // For now, let's assume we store table ID or connection ID + table name.
+        // LinkMappingDef stores source_connection_id and join_table_name.
+        
+        const matchedTable = datasources.find(
+          t => t.connection_id === existingMapping.source_connection_id && t.table_name === existingMapping.join_table_name
+        );
+
+        if (matchedTable) {
+          setSelectedJoinTable(matchedTable);
+          form.setFieldsValue({
+            join_table_id: matchedTable.id,
+            source_key_mapping: existingMapping.source_key_column,
+            target_key_mapping: existingMapping.target_key_column,
+          });
+
+          // Restore property mappings
+          const columns = parseColumnsSchema(matchedTable.columns_schema);
+          const keyColumns = [existingMapping.source_key_column, existingMapping.target_key_column];
+          const propertyColumns = columns.filter(
+            (col) => !keyColumns.includes(col.name)
+          );
+          
+          const properties: LinkPropertyMapping[] = propertyColumns.map((col) => {
+            const mappedProp = existingMapping.property_mappings[col.name];
+            return {
+              column: col.name,
+              displayName: mappedProp || col.name, // If mapped, use it (or maybe key is prop name?)
+              // Actually property_mappings is { "link_prop": "table_col" } usually, or { "table_col": "link_prop" }?
+              // The model says: property_mappings: Dict[str, str] = Field(default={}, sa_column=Column(JSON))  # { "link_prop": "table_col" }
+              // So we need to find if this column is in values.
+              
+              // Let's reverse lookup
+              dataType: mapColumnTypeToDataType(col.type),
+              include: Object.values(existingMapping.property_mappings).includes(col.name),
+            };
+          });
+          
+          // Update display names from mapping keys
+          properties.forEach(p => {
+             const entry = Object.entries(existingMapping.property_mappings).find(([k, v]) => v === p.column);
+             if (entry) {
+               p.displayName = entry[0];
+             }
+          });
+
+          setLinkProperties(properties);
+        }
+      } else if (linkType.cardinality === 'MANY_TO_MANY' && !existingMapping) {
+        // Default initialization if no mapping exists (same as before)
         if (datasources.length > 0) {
           const defaultTable = datasources[0];
           setSelectedJoinTable(defaultTable);
@@ -148,7 +221,7 @@ const LinkTypeEditor: React.FC<LinkTypeEditorProps> = ({
         }
       }
     }
-  }, [linkType, visible, form, datasources]);
+  }, [linkType, visible, form, datasources, existingMapping]);
 
   // Parse columns_schema (can be string or array)
   const parseColumnsSchema = (
@@ -228,13 +301,13 @@ const LinkTypeEditor: React.FC<LinkTypeEditorProps> = ({
 
   // Get source object type
   const getSourceObjectType = (): IObjectType | undefined => {
-    const sourceTypeId = form.getFieldValue('source_type_id');
+    const sourceTypeId = linkType?.source_object_def_id;
     return objectTypes.find((ot) => ot.id === sourceTypeId);
   };
 
   // Get target object type
   const getTargetObjectType = (): IObjectType | undefined => {
-    const targetTypeId = form.getFieldValue('target_type_id');
+    const targetTypeId = linkType?.target_object_def_id;
     return objectTypes.find((ot) => ot.id === targetTypeId);
   };
 
@@ -305,6 +378,36 @@ const LinkTypeEditor: React.FC<LinkTypeEditorProps> = ({
       };
 
       await apiClient.put(`/meta/link-types/${linkType?.id}`, payload);
+
+      // Save Link Mapping if M:N
+      if (cardinality === 'MANY_TO_MANY' && selectedJoinTable) {
+        const mappingPayload = {
+          link_def_id: linkType?.id,
+          source_connection_id: selectedJoinTable.connection_id, // Use connection_id
+          join_table_name: selectedJoinTable.table_name, // Use table_name
+          source_key_column: values.source_key_mapping,
+          target_key_column: values.target_key_mapping,
+          property_mappings: linkProperties
+            .filter(p => p.include)
+            .reduce((acc, p) => ({ ...acc, [p.displayName]: p.column }), {}),
+        };
+
+        if (existingMapping) {
+          await updateLinkMapping(existingMapping.id, mappingPayload);
+        } else {
+          // Fix type mismatch: link_def_id can be undefined in linkType, but required in createLinkMapping
+          if (!linkType?.id) {
+            message.error('Link type ID is missing');
+            return;
+          }
+          const createPayload = {
+            ...mappingPayload,
+            link_def_id: linkType.id
+          };
+          await createLinkMapping(createPayload);
+        }
+      }
+
       message.success('Link type updated successfully');
       onSuccess();
       handleCancel();
@@ -410,13 +513,13 @@ const LinkTypeEditor: React.FC<LinkTypeEditorProps> = ({
           </Form.Item>
           <Form.Item label="Source Object">
             <Input
-              value={sourceObject?.display_name || linkType.source_type_id}
+              value={sourceObject?.display_name || linkType.source_object_def_id}
               disabled
             />
           </Form.Item>
           <Form.Item label="Target Object">
             <Input
-              value={targetObject?.display_name || linkType.target_type_id}
+              value={targetObject?.display_name || linkType.target_object_def_id}
               disabled
             />
           </Form.Item>

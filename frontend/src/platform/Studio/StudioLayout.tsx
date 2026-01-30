@@ -2,8 +2,8 @@
  * Studio Layout component for Ontology Project Studio.
  * Renders inside MainLayout's Content area with its own sidebar.
  */
-import React from 'react';
-import { Layout, Menu, Breadcrumb } from 'antd';
+import React, { useState, useEffect } from 'react';
+import { Layout, Menu, Breadcrumb, Spin } from 'antd';
 import { Outlet, useNavigate, useLocation, useParams } from 'react-router-dom';
 import type { MenuProps } from 'antd';
 import {
@@ -17,24 +17,41 @@ import {
   FileTextOutlined,
   ExperimentOutlined,
 } from '@ant-design/icons';
+import { fetchProjectById, IOntologyProject } from '../../api/ontology';
 
 const { Sider, Content } = Layout;
-
-// Mock project data
-const MOCK_PROJECTS: Record<string, { name: string; description: string }> = {
-  '00000000-0000-0000-0000-000000000001': {
-    name: 'Battlefield System',
-    description: 'Military operations simulation',
-  },
-};
 
 const StudioLayout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { projectId } = useParams<{ projectId: string }>();
   
-  const project = projectId ? MOCK_PROJECTS[projectId] : null;
-  const projectName = project?.name || 'Unknown Project';
+  const [project, setProject] = useState<IOntologyProject | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  // Fetch project info from API
+  useEffect(() => {
+    const loadProject = async () => {
+      if (!projectId) {
+        setLoading(false);
+        return;
+      }
+      
+      try {
+        setLoading(true);
+        const data = await fetchProjectById(projectId);
+        setProject(data);
+      } catch (error) {
+        console.error('Failed to load project:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadProject();
+  }, [projectId]);
+
+  const projectName = project?.title || (loading ? '加载中...' : '未知项目');
 
   const menuItems: MenuProps['items'] = [
     {
@@ -56,11 +73,6 @@ const StudioLayout: React.FC = () => {
           key: `/oma/project/${projectId}/link-types`,
           icon: <LinkOutlined />,
           label: '链接类型 (Link Types)',
-        },
-        {
-          key: `/oma/project/${projectId}/shared-properties`,
-          icon: <PropertySafetyOutlined />,
-          label: '公共属性 (Shared Properties)',
         },
         {
           key: `/oma/project/${projectId}/physical-properties`,
@@ -162,7 +174,7 @@ const StudioLayout: React.FC = () => {
     if (path.includes('/topology')) return '拓扑总览';
     if (path.includes('/object-types')) return '对象类型';
     if (path.includes('/link-types')) return '链接类型';
-    if (path.includes('/shared-properties')) return '公共属性';
+    if (path.includes('/shared-properties')) return '属性引用';
     if (path.includes('/physical-properties')) return '物理属性';
     if (path.includes('/actions')) return '行为定义';
     if (path.includes('/functions')) return '函数';
@@ -250,7 +262,7 @@ const StudioLayout: React.FC = () => {
         <Content
           style={{
             flex: 1,
-            padding: '24px',
+            padding: '16px',
             background: '#f5f5f5',
             overflow: 'auto',
           }}

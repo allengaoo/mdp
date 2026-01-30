@@ -634,10 +634,10 @@ def create_execution_log(
     project_id: str,
     action_def_id: str,
     execution_status: str = "SUCCESS",
-    source_object_id: Optional[str] = None,
+    trigger_user_id: Optional[str] = None,
     duration_ms: Optional[int] = None,
     error_message: Optional[str] = None,
-    request_params: Optional[Dict[str, Any]] = None,
+    input_params: Optional[Dict[str, Any]] = None,
 ) -> ExecutionLog:
     """
     Create a new execution log entry.
@@ -647,10 +647,10 @@ def create_execution_log(
         project_id: Project ID
         action_def_id: ActionDefinition ID
         execution_status: SUCCESS or FAILED
-        source_object_id: Optional source object ID
+        trigger_user_id: Optional trigger user ID
         duration_ms: Execution duration in milliseconds
         error_message: Error message if failed
-        request_params: Request parameters
+        input_params: Input parameters for the action
         
     Returns:
         Created ExecutionLog object
@@ -661,11 +661,11 @@ def create_execution_log(
         db_log = ExecutionLog(
             project_id=project_id,
             action_def_id=action_def_id,
-            source_object_id=source_object_id,
+            trigger_user_id=trigger_user_id,
+            input_params=input_params,
             execution_status=execution_status,
             duration_ms=duration_ms,
             error_message=error_message,
-            request_params=request_params,
             created_at=datetime.now()
         )
         session.add(db_log)

@@ -1,104 +1,90 @@
 # MDP Platform
 
-一个全栈本体构建平台，展示 MDP（Meta-Data-Process）平台的核心功能。
+多模态本体构建平台 - CEC-AIOS 核心模块
 
-## 🎯 项目概述
+## 项目概述
 
-MDP Platform 是一个**多模态本体构建平台**（CEC-AIOS 的核心模块），采用"全局资产一致性 (Global Consistency) + 场景化敏捷应用 (Scenario Agility)"的双层设计原则。
+MDP Platform 是一个**元数据驱动的本体构建平台**，采用"全局资产一致性 (Global Consistency) + 场景化敏捷应用 (Scenario Agility)"的双层设计原则。
 
 ### 核心特性
 
-- ✅ **前后端完整联调**：所有功能已完成前后端集成
-- ✅ **新架构实现**：对标 Palantir Foundry，使用物理表存储数据
-- ✅ **代码执行引擎**：支持内置和子进程两种执行模式
-- ✅ **运行时上下文 API**：为用户代码提供安全的数据操作接口
-- ✅ **完整的测试覆盖**：包含单元测试、集成测试、边界条件测试和并发测试
-- ✅ **执行日志系统**：完整的动作执行日志记录和查询
+- **元数据驱动架构**：基于本体定义动态生成数据模型和API
+- **多版本API支持**：v1（兼容层）+ v3（新架构）并行运行
+- **代码执行引擎**：支持内置和子进程两种执行模式
+- **运行时上下文API**：为用户代码提供安全的数据操作接口
+- **完整测试覆盖**：单元测试、集成测试、E2E测试
+- **执行日志系统**：完整的动作执行日志记录和查询
 
 ## 项目结构
 
 ```
-mdp-platform-demo/
-├── backend/              # Python/FastAPI 后端
+mdp/
+├── backend/                    # Python/FastAPI 后端
 │   ├── app/
-│   │   ├── main.py      # FastAPI 应用入口
-│   │   ├── core/        # 核心模块
-│   │   │   ├── config.py      # 应用配置（环境变量）
-│   │   │   ├── db.py          # 数据库连接和会话管理
+│   │   ├── main.py            # FastAPI 应用入口
+│   │   ├── core/              # 核心模块
+│   │   │   ├── config.py      # 应用配置
+│   │   │   ├── db.py          # 数据库连接
 │   │   │   ├── logger.py      # Loguru 日志配置
-│   │   │   └── middleware.py  # 请求日志和追踪中间件
-│   │   ├── models/      # SQLModel 数据模型
-│   │   │   ├── meta.py  # Meta 层模型（ObjectType, LinkType, FunctionDefinition, ActionDefinition）
-│   │   │   └── data.py  # Instance 层模型（ObjectInstance）
-│   │   ├── engine/      # 业务逻辑引擎
-│   │   │   ├── meta_crud.py        # Meta 层 CRUD 操作
-│   │   │   ├── instance_crud.py    # Instance 层 CRUD 操作（支持物理表写入）
-│   │   │   ├── ontology_repository.py  # 本体仓库（物理表映射层）
-│   │   │   ├── code_executor.py    # 代码执行引擎（内置/子进程）
-│   │   │   ├── runtime_context.py  # 运行时上下文 API
-│   │   │   ├── subprocess_runner.py  # 子进程执行器
-│   │   │   ├── function_runner.py  # 函数执行引擎
-│   │   │   └── action_runner.py    # 操作执行引擎（示例）
-│   │   ├── api/         # API 路由
-│   │   │   └── v1/
-│   │   │       ├── ontology.py  # Meta 层 RESTful API
-│   │   │       └── execute.py   # 运行时操作 API（Action 执行、数据查询）
-│   │   └── extensions/  # 扩展模块
-│   │       └── battlefield/
-│   │           └── init_data.py  # Battlefield 场景数据初始化
-│   ├── docs/            # 文档目录
-│   │   └── database_schema_relationships.md  # 数据库架构关联关系文档
-│   ├── tests/           # 测试套件
-│   │   ├── test_code_executor.py    # 代码执行器测试
-│   │   ├── test_runtime_context.py  # 运行时上下文测试
-│   │   ├── test_execution_logs.py   # 执行日志测试
-│   │   ├── test_edge_cases.py       # 边界条件测试
-│   │   └── test_concurrency.py      # 并发执行测试
-│   ├── scripts/         # 工具脚本
-│   │   └── cleanup_test_data.py     # 测试数据清理脚本
-│   ├── logs/            # 日志文件目录
-│   ├── requirements.txt # Python 依赖
-│   ├── pytest.ini       # pytest 配置
-│   ├── env.template     # 环境变量模板
-│   ├── create_env.py    # 环境变量文件生成脚本
-│   ├── setup_db.py      # 数据库初始化脚本
-│   ├── init.sql         # 数据库架构 SQL
-│   ├── seed_data.sql    # 演示数据（Battlefield 场景）
-│   └── Dockerfile       # Docker 镜像定义
+│   │   │   └── middleware.py  # 请求日志中间件
+│   │   ├── models/            # SQLModel 数据模型
+│   │   │   ├── meta.py        # Meta层模型（v1）
+│   │   │   ├── data.py        # Instance层模型
+│   │   │   ├── ontology.py    # 本体模型（v3）
+│   │   │   ├── context.py     # 上下文模型
+│   │   │   └── ...
+│   │   ├── engine/            # 业务逻辑引擎
+│   │   │   ├── meta_crud.py   # Meta层CRUD（v1）
+│   │   │   ├── instance_crud.py
+│   │   │   ├── code_executor.py
+│   │   │   ├── runtime_context.py
+│   │   │   └── v3/            # v3引擎
+│   │   │       ├── ontology_crud.py
+│   │   │       ├── project_crud.py
+│   │   │       └── context_crud.py
+│   │   ├── api/               # API路由
+│   │   │   ├── v1/            # v1 API（兼容层）
+│   │   │   │   ├── ontology.py
+│   │   │   │   └── execute.py
+│   │   │   └── v3/            # v3 API（新架构）
+│   │   │       ├── ontology.py
+│   │   │       └── projects.py
+│   │   └── schemas/           # API数据传输对象
+│   ├── tests/                 # 测试套件
+│   ├── docs/                  # 后端文档
+│   ├── requirements.txt       # Python依赖
+│   ├── init.sql              # 数据库初始化脚本
+│   └── Dockerfile
 │
-├── frontend/            # React/Vite/TypeScript 前端
+├── frontend/                  # React/TypeScript 前端
 │   ├── src/
-│   │   ├── layouts/    # 布局组件
-│   │   │   └── MainLayout.tsx  # 主布局（侧边栏导航）
-│   │   ├── platform/   # 平台组件
-│   │   │   ├── OMA/
-│   │   │   │   └── OntologyLibrary.tsx  # 本体库列表
-│   │   │   └── Studio/ # 本体项目工作室
-│   │   │       ├── StudioLayout.tsx      # 工作室布局
-│   │   │       ├── TopologyView.tsx      # 拓扑总览（ReactFlow）
-│   │   │       ├── ObjectTypeList.tsx    # 对象类型列表
-│   │   │       ├── ObjectTypeWizard.tsx  # 对象类型创建向导
-│   │   │       ├── ObjectTypeEditor.tsx # 对象类型编辑器
-│   │   │       ├── LinkTypeList.tsx      # 链接类型列表
-│   │   │       ├── LinkTypeWizard.tsx    # 链接类型创建向导
-│   │   │       ├── LinkTypeEditor.tsx    # 链接类型编辑器
-│   │   │       ├── SharedPropertyList.tsx # 公共属性列表
-│   │   │       ├── SharedPropertyModal.tsx # 公共属性模态框
-│   │   │       ├── PhysicalPropertyList.tsx # 物理属性列表
-│   │   │       ├── ActionDefinitionList.tsx # 行为定义列表
-│   │   │       ├── FunctionList.tsx      # 函数列表
-│   │   │       ├── ExecutionLogList.tsx  # 运行日志列表
-│   │   │       └── OntologyTest.tsx      # 本体测试页面
-│   │   ├── apps/       # 应用组件
-│   │   │   └── Battlefield/
-│   │   │       └── Dashboard.tsx      # Battlefield 仪表板（地图可视化）
-│   │   └── api/        # API 客户端
-│   │       ├── client.ts  # 基础 API 客户端
-│   │       └── axios.ts   # Axios 客户端（带日志拦截器）
+│   │   ├── App.tsx           # 应用入口和路由
+│   │   ├── layouts/          # 布局组件
+│   │   │   └── MainLayout.tsx
+│   │   ├── platform/         # 平台组件
+│   │   │   ├── OMA/          # 本体管理
+│   │   │   │   └── OntologyLibrary.tsx
+│   │   │   └── Studio/       # 本体工作室
+│   │   │       ├── StudioLayout.tsx
+│   │   │       ├── TopologyView.tsx
+│   │   │       ├── ObjectTypeList.tsx
+│   │   │       ├── LinkTypeList.tsx
+│   │   │       ├── SharedPropertyList.tsx
+│   │   │       ├── FunctionList.tsx
+│   │   │       ├── ActionDefinitionList.tsx
+│   │   │       ├── ExecutionLogList.tsx
+│   │   │       └── OntologyTest.tsx
+│   │   ├── api/              # API客户端
+│   │   │   ├── client.ts     # 基础客户端
+│   │   │   ├── ontology.ts   # 本体API
+│   │   │   └── v3/           # v3 API适配器
+│   │   └── utils/            # 工具函数
+│   ├── e2e/                  # E2E测试（Playwright）
 │   ├── package.json
 │   └── vite.config.ts
 │
-├── docker-compose.yml   # Docker 编排配置
+├── docs/                     # 项目文档
+├── docker-compose.yml        # Docker编排配置
 └── README.md
 ```
 
@@ -106,620 +92,146 @@ mdp-platform-demo/
 
 ### 前置要求
 
-**使用 Docker（推荐）：**
-- Docker Desktop for Windows（下载：https://www.docker.com/products/docker-desktop）
-
-**本地开发（无需 Docker）：**
 - Python 3.10+
-- MySQL 数据库（本地安装）
-- Node.js 18+（前端开发）
+- Node.js 18+
+- MySQL 8.0+（或 PostgreSQL 16+）
 
-### 方式一：使用 Docker Compose（推荐）
+### 后端启动
 
-1. 克隆项目并进入目录：
 ```bash
-cd mdp-platform-demo
+# 1. 进入后端目录
+cd backend
+
+# 2. 创建虚拟环境
+python -m venv venv
+venv\Scripts\activate  # Windows
+# source venv/bin/activate  # Linux/Mac
+
+# 3. 安装依赖
+pip install -r requirements.txt
+
+# 4. 配置环境变量
+# 复制 env.template 为 .env 并修改数据库连接
+
+# 5. 初始化数据库
+python setup_db.py
+
+# 6. 启动服务
+uvicorn app.main:app --reload --port 8000
 ```
 
-2. 复制环境变量模板（Windows PowerShell）：
-```powershell
-Copy-Item backend\env.template backend\.env
+### 前端启动
+
+```bash
+# 1. 进入前端目录
+cd frontend
+
+# 2. 安装依赖
+npm install
+
+# 3. 启动开发服务器
+npm run dev
 ```
 
-   或者手动创建 `backend/.env` 文件，复制 `backend/env.template` 的内容。
+### Docker 部署
 
-3. 启动服务：
 ```bash
 docker-compose up -d
 ```
 
-4. 访问：
-   - 后端 API: http://localhost:8000
-   - API 文档: http://localhost:8000/docs
+## 访问地址
 
-### 方式二：本地开发（不使用 Docker）
-
-#### 后端开发
-
-1. **安装 MySQL**（如果未安装）：
-   - 下载：https://dev.mysql.com/downloads/mysql/
-   - 或使用 MySQL Installer for Windows
-   - 安装并记住设置的 root 密码
-
-2. **进入后端目录**：
-```powershell
-cd backend
-```
-
-3. **创建虚拟环境**：
-```powershell
-python -m venv venv
-venv\Scripts\activate
-```
-
-4. **安装依赖**：
-```powershell
-pip install -r requirements.txt
-```
-
-5. **配置环境变量**：
-   
-   运行辅助脚本创建 `.env` 文件：
-```powershell
-py backend\create_env.py
-```
-   
-   或手动创建 `backend/.env` 文件，内容参考 `backend/env.template`：
-   ```
-   DATABASE_URL=mysql+pymysql://root:您的密码@localhost:3306/ontology
-   DEBUG=False
-   ```
-   
-   **注意**：如果 MySQL 用户名不是 `root`，请相应修改。
-
-6. **初始化数据库**：
-   
-   **方法一：使用 Python 脚本（推荐）**
-   
-   运行数据库初始化脚本，它会自动创建数据库、应用架构并加载演示数据：
-```powershell
-py backend\setup_db.py
-```
-   
-   **方法二：手动执行 SQL 脚本**
-   
-   如果选择手动执行：
-```powershell
-# 创建数据库
-mysql -u root -p -e "CREATE DATABASE ontology CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-# 应用架构
-mysql -u root -p ontology < backend\init.sql
-# 加载演示数据（可选）
-mysql -u root -p ontology < backend\seed_data.sql
-```
-   
-   **注意**：
-   - 数据库名称：`ontology`（在 setup_db.py 和 .env 中配置）
-   - 架构脚本会创建完整的数据库表结构
-   - 种子数据包含 Battlefield 场景的完整演示数据
-
-7. **启动服务**：
-```powershell
-# 从项目根目录运行
-cd backend
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-   或者从项目根目录：
-```powershell
-uvicorn backend.app.main:app --reload
-```
-
-   服务启动后：
-   - API 服务: http://localhost:8000
-   - API 文档: http://localhost:8000/docs
-   - 日志文件: `backend/logs/mdp.log`
-
-#### 前端开发
-
-1. 进入前端目录：
-```bash
-cd frontend
-```
-
-2. 安装依赖：
-```bash
-npm install
-```
-
-3. 启动开发服务器：
-```bash
-npm run dev
-```
-
-4. 访问: http://localhost:3000
+- **前端**: http://localhost:3000
+- **后端API**: http://localhost:8000
+- **API文档**: http://localhost:8000/docs
 
 ## 技术栈
 
 ### 后端
-- **FastAPI**: 现代 Python Web 框架
-- **SQLModel**: 基于 Pydantic 和 SQLAlchemy 的 ORM
-- **MySQL**: 关系型数据库
-- **PyMySQL**: MySQL 数据库驱动
-- **Loguru**: 结构化日志库
-- **Pydantic Settings**: 配置管理
+- **FastAPI** - 现代Python Web框架
+- **SQLModel** - 基于Pydantic和SQLAlchemy的ORM
+- **MySQL/PostgreSQL** - 关系型数据库
+- **Loguru** - 结构化日志库
+- **Pydantic Settings** - 配置管理
 
 ### 前端
-- **React 18**: UI 框架
-- **TypeScript**: 类型安全的 JavaScript
-- **Vite**: 快速的前端构建工具
-- **Ant Design**: 企业级 UI 组件库
-- **React Router DOM**: 路由管理
-- **React Leaflet**: 地图可视化组件
-- **ReactFlow**: 图形可视化组件
-- **Axios**: HTTP 客户端
+- **React 18** - UI框架
+- **TypeScript** - 类型安全
+- **Vite** - 构建工具
+- **Ant Design** - UI组件库
+- **React Router DOM** - 路由管理
+
+### 测试
+- **pytest** - 后端测试
+- **Vitest** - 前端单元测试
+- **Playwright** - E2E测试
+
+## API 版本
+
+### v1 API（兼容层）
+- 前缀：`/api/v1/meta` 和 `/api/v1/execute`
+- 用于保持与旧代码的兼容性
+
+### v3 API（新架构）
+- 前缀：`/api/v3`
+- 支持项目管理、本体版本控制等新特性
 
 ## 数据库架构
 
-项目使用 MySQL 数据库，采用**双层架构设计**：
+项目采用**双层架构设计**：
 
-1. **新架构层（底层）**：对标 Palantir Foundry，使用物理表存储数据
-   - 数据底座：`sys_dataset` → `sys_dataset_column`
-   - 本体定义：`ont_object_type` → `ont_object_property` → `sys_dataset_column`
-   - 物理存储：`data_fighter`, `data_target`, `data_mission` 等
+### Meta层（定义层）
+| 表名 | 说明 |
+|------|------|
+| `meta_project` | 项目定义 |
+| `meta_object_type` | 对象类型定义 |
+| `meta_link_type` | 链接类型定义 |
+| `meta_function_def` | 函数定义 |
+| `meta_action_def` | 操作定义 |
+| `meta_shared_property` | 共享属性定义 |
 
-2. **兼容视图层（上层）**：为旧的前后端代码提供兼容接口
-   - `meta_object_type` (视图) ← `ont_object_type` (表)
-   - `sys_object_instance` (视图) ← 所有 `data_*` 表 (UNION ALL)
-
-**详细文档**：请参阅 [`backend/docs/database_schema_relationships.md`](backend/docs/database_schema_relationships.md)
-
-### 架构特点
-
-- **读写分离**：写操作直接操作物理表，读操作通过兼容视图统一读取
-- **动态映射**：通过 `OntologyRepository` 动态解析对象类型到物理表的映射
-- **向后兼容**：所有旧代码通过视图访问数据，无需修改
-- **性能优化**：物理表存储比 JSON 查询更快，支持索引和 SQL 优化
-
-### ER 图
-
-```mermaid
-erDiagram
-    %% Meta Layer (Definitions)
-    meta_project {
-        varchar id PK
-        varchar name
-        varchar description
-        datetime created_at
-    }
-    
-    meta_object_type {
-        varchar id PK
-        varchar api_name UK
-        varchar display_name
-        varchar description
-        json property_schema
-        varchar project_id FK
-        datetime created_at
-        datetime updated_at
-    }
-    
-    meta_link_type {
-        varchar id PK
-        varchar api_name UK
-        varchar display_name
-        varchar source_type_id FK
-        varchar target_type_id FK
-        varchar cardinality
-    }
-    
-    meta_function_def {
-        varchar id PK
-        varchar api_name UK
-        varchar display_name
-        longtext code_content
-        varchar bound_object_type_id FK
-        varchar description
-        json input_params_schema
-        varchar output_type
-    }
-    
-    meta_action_def {
-        varchar id PK
-        varchar api_name UK
-        varchar display_name
-        varchar backing_function_id FK
-    }
-    
-    meta_shared_property {
-        varchar id PK
-        varchar project_id FK
-        varchar api_name
-        varchar display_name
-        varchar data_type
-        varchar formatter
-        varchar description
-        datetime created_at
-    }
-    
-    meta_test_scenario {
-        varchar id PK
-        varchar project_id FK
-        varchar name
-        json steps_config
-        datetime created_at
-    }
-    
-    sys_datasource_table {
-        varchar id PK
-        varchar table_name UK
-        varchar db_type
-        json columns_schema
-        datetime created_at
-    }
-    
-    %% Instance Layer (Data)
-    sys_object_instance {
-        varchar id PK
-        varchar object_type_id FK
-        json properties
-        datetime created_at
-        datetime updated_at
-    }
-    
-    sys_link_instance {
-        varchar id PK
-        varchar link_type_id FK
-        varchar source_instance_id FK
-        varchar target_instance_id FK
-        json properties
-        datetime created_at
-    }
-    
-    %% Runtime & Testing Layer
-    sys_action_log {
-        varchar id PK
-        varchar project_id FK
-        varchar action_def_id FK
-        varchar trigger_user_id
-        json input_params
-        varchar execution_status
-        text error_message
-        int duration_ms
-        datetime created_at
-    }
-    
-    %% Relationships - Meta Layer
-    meta_project ||--o{ meta_object_type : "contains"
-    meta_project ||--o{ meta_shared_property : "contains"
-    meta_project ||--o{ meta_test_scenario : "contains"
-    meta_project ||--o{ sys_action_log : "logs"
-    meta_object_type ||--o{ meta_link_type : "source_type"
-    meta_object_type ||--o{ meta_link_type : "target_type"
-    meta_object_type ||--o{ meta_function_def : "bound_to"
-    meta_object_type ||--o{ sys_object_instance : "instantiates"
-    meta_function_def ||--o{ meta_action_def : "backed_by"
-    meta_action_def ||--o{ sys_action_log : "executed_as"
-    
-    %% Relationships - Instance Layer
-    meta_link_type ||--o{ sys_link_instance : "instantiates"
-    sys_object_instance ||--o{ sys_link_instance : "source"
-    sys_object_instance ||--o{ sys_link_instance : "target"
-```
-
-### Meta 层（定义层）
-
-- **`meta_project`**: 项目定义
-  - 用于组织和管理相关的本体定义
-  - 一个项目包含多个对象类型、链接类型等
-- **`meta_object_type`**: 对象类型定义（如 "Fighter", "Mission"）
-  - 包含属性模式（property_schema）的 JSON 定义
-  - 关联到项目（project_id）
-- **`meta_link_type`**: 关系类型定义（对象间的连接关系）
-  - 支持 1:1, 1:N, M:N 基数
-  - 定义源对象类型和目标对象类型之间的关系
-- **`meta_shared_property`**: 公共属性定义（标准属性库 SPT）
-  - 跨对象类型的统一属性定义
-  - 支持数据类型约束（STRING, INTEGER, DOUBLE, BOOLEAN, GEOPOINT, DATE）
-  - 约束信息存储在 formatter 字段（JSON 格式）
-- **`meta_function_def`**: 函数定义（业务逻辑代码）
-  - 存储 Python 代码内容
-  - 可绑定到特定对象类型
-- **`meta_action_def`**: 操作定义（用户触发操作）
-  - 关联到函数定义
-- **`meta_test_scenario`**: 测试场景定义
-  - 存储动作编排序列（JSON 格式）
-
-### 数据源层
-
-- **`sys_datasource_table`**: 数据源表定义
-  - 存储原始数据表的元数据信息
-  - 用于对象类型创建时选择数据源
-  - 包含列结构定义（columns_schema，JSON 格式）
-
-### Instance 层（数据层）
-
-- **`sys_object_instance`**: 对象实例（实际数据行）
-  - 使用 JSON 字段存储动态属性
-  - 关联到对象类型
-- **`sys_link_instance`**: 链接实例（对象间的关系实例）
-  - 存储源对象和目标对象之间的连接
-  - 支持链接属性（JSON）
-
-数据库初始化脚本：`backend/init.sql`
-
-**数据库设置工具**：
-- `backend/setup_db.py`: Python 脚本，自动创建数据库、应用架构和加载演示数据
-- `backend/init.sql`: 数据库架构 SQL 文件
-- `backend/seed_data.sql`: Battlefield 场景演示数据
-
-## 日志和可观察性
-
-项目集成了完整的日志和追踪系统：
-
-### 后端日志
-- **日志库**: Loguru
-- **日志位置**: `backend/logs/mdp.log`
-- **日志配置**:
-  - 控制台输出：彩色、DEBUG 级别
-  - 文件输出：INFO 级别、10MB 轮转、保留 10 天、自动压缩
-- **日志格式**: `{time} | {level} | {request_id} | {message}`
-- **请求追踪**: 每个 HTTP 请求自动生成 UUID request_id，并在响应头 `X-Request-ID` 中返回
-
-### 前端日志
-- **HTTP 拦截器**: Axios 拦截器自动记录所有 API 请求和响应
-- **日志格式**:
-  - 请求: `>> [Req] {method} {url}`
-  - 响应: `<< [Res] {status} {url} ({time}ms) [Request-ID: {request_id}]`
-
-## 开发工具
-
-- **`backend/create_env.py`**: 辅助脚本，用于创建 `.env` 文件
-- **`backend/setup_db.py`**: 数据库初始化脚本，一键设置数据库
-
-## 项目模块
-
-### 后端模块
-
-#### 核心模块 (`app/core/`)
-- **`config.py`**: 应用配置管理
-  - 使用 Pydantic Settings 加载环境变量
-  - 数据库连接字符串配置
-- **`db.py`**: 数据库连接和会话管理
-  - SQLModel 引擎配置
-  - Session 依赖注入
-- **`logger.py`**: 日志配置
-  - Loguru 日志系统配置
-  - 控制台输出（带颜色）
-  - 文件输出（自动轮转和压缩）
-  - 日志格式：`{time} | {level} | {request_id} | {message}`
-- **`middleware.py`**: HTTP 中间件
-  - 请求 ID 生成和追踪
-  - 请求/响应日志记录
-  - 处理时间计算
-
-#### 数据模型 (`app/models/`)
-- **`meta.py`**: Meta 层数据模型
-  - `Project`: 项目定义
-  - `ObjectType`: 对象类型定义（包含 JSON 属性模式，关联到项目）
-  - `LinkType`: 关系类型定义
-  - `SharedProperty`: 公共属性定义（标准属性库）
-  - `FunctionDefinition`: 函数定义（业务逻辑代码）
-  - `ActionDefinition`: 操作定义（用户触发操作）
-  - 每个模型包含 `*Create`、`*Update` 和 `*Read` DTOs
-- **`data.py`**: Instance 层数据模型
-  - `ObjectInstance`: 对象实例（包含 UUID 主键、类型关联、JSON 属性）
-  - `LinkInstance`: 链接实例（对象间的关系实例）
-  - `DataSourceTable`: 数据源表定义（原始数据表的元数据）
-
-#### 业务逻辑引擎 (`app/engine/`)
-- **`meta_crud.py`**: Meta 层 CRUD 操作
-  - 完整的 CRUD 函数：`create_*`, `get_*`, `list_*`, `update_*`, `delete_*`
-  - 按 `api_name` 查找函数：`get_object_type_by_name`, `get_action_definition_by_name`, `get_shared_property_by_name`
-  - 支持更新操作：`update_object_type`, `update_link_type`, `update_shared_property`
-  - 自动检测新旧架构，兼容两种表结构
-  - 集成日志记录和错误处理
-- **`instance_crud.py`**: Instance 层 CRUD 操作
-  - ObjectInstance CRUD：`create_object`, `get_object`, `update_object` (JSON merge), `delete_object`, `list_objects`
-  - **新架构支持**：使用 `OntologyRepository` 写入物理表，通过视图读取
-  - LinkInstance CRUD：`create_link`, `get_link`, `delete_link`, `get_links_for_object`
-  - DataSourceTable CRUD：`create_datasource_table`, `get_datasource_table`, `get_datasource_table_by_name`, `list_datasource_tables`, `delete_datasource_table`
-  - JSON 属性过滤：支持通过 MySQL JSON 函数过滤对象属性
-  - 向后兼容：如果无法解析物理表，自动回退到 JSON 存储
-- **`ontology_repository.py`**: 本体仓库（物理表映射层）
-  - `resolve_physical_table()`: 解析 object_type_id → 物理表名
-  - `get_property_mappings()`: 获取属性到列的映射
-  - `build_insert_sql()`: 构建 INSERT 语句
-  - `build_update_sql()`: 构建 UPDATE 语句
-  - `build_delete_sql()`: 构建 DELETE 语句
-  - 缓存机制提升性能
-- **`code_executor.py`**: 代码执行引擎
-  - 支持内置执行器（builtin）和子进程执行器（subprocess）
-  - 自动选择执行器（auto 模式）
-  - 代码试运行功能（不保存状态）
-  - 超时控制和错误处理
-  - 完整的执行日志记录
-- **`runtime_context.py`**: 运行时上下文 API
-  - 为用户代码提供安全的数据操作接口
-  - 对象操作：`get_object`, `update_object`, `create_object`, `delete_object`, `query_objects`
-  - 关联操作：`get_linked_objects`, `create_link`, `delete_link`
-  - 元数据查询：`get_object_type`, `get_source`
-  - 操作日志记录
-- **`subprocess_runner.py`**: 子进程执行器
-  - 隔离的代码执行环境
-  - 支持超时控制
-  - 标准输出/错误捕获
-- **`function_runner.py`**: 函数执行引擎（兼容层）
-- **`action_runner.py`**: 操作执行引擎（示例实现，用于演示）
-
-#### API 端点 (`app/api/v1/`)
-- **`ontology.py`**: Meta 层 RESTful API
-  - 端点前缀：`/api/v1/meta`
-  - Projects: `POST/GET/GET/{id} /projects`
-  - ObjectTypes: `POST/GET/GET/{id}/PUT/{id}/DELETE/{id} /object-types`
-  - LinkTypes: `POST/GET/GET/{id}/PUT/{id}/DELETE/{id} /link-types`
-  - SharedProperties: `POST/GET/GET/{id}/PUT/{id}/DELETE/{id} /shared-properties`
-  - DataSourceTables: `POST/GET/GET/{id}/GET/name/{name}/DELETE/{id} /datasource-tables`
-  - Functions: `POST/GET/GET/{id}/DELETE/{id} /functions`
-  - Actions: `POST/GET/GET/{id}/DELETE/{id} /actions`
-  - 所有端点支持分页（skip/limit）
-  - 支持更新操作（PUT）用于 ObjectType、LinkType、SharedProperty
-- **`execute.py`**: 运行时操作 API
-  - 端点前缀：`/api/v1/execute`
-  - `POST /action/run`: 执行 Action（通过 api_name），自动记录执行日志
-  - `POST /code/test`: 代码试运行（不保存状态）
-  - `POST /code/validate`: 代码语法验证
-  - `POST /function/{function_id}/test`: 函数试运行
-  - `GET /logs`: 查询执行日志（支持状态筛选、分页）
-  - `GET /objects/{type_api_name}`: 按类型查询对象（支持 JSON 属性过滤和分页）
-  - `POST /objects/{type_api_name}`: 按类型创建对象实例
-  - `GET /links`: 查询链接实例（支持多种筛选条件）
-  - 完整的错误处理和请求验证
-
-#### 扩展模块 (`app/extensions/`)
-- **`battlefield/init_data.py`**: Battlefield 场景数据初始化（待实现）
-
-### API 端点概览
-
-访问 API 文档：`http://localhost:8000/docs`
-
-#### Meta 层 API (`/api/v1/meta`)
-
-管理 Meta 层定义（项目、对象类型、关系类型、公共属性、数据源表、函数定义、操作定义）：
-
-- **Projects**: `POST/GET/GET/{id} /projects`
-- **ObjectTypes**: `POST/GET/GET/{id}/PUT/{id}/DELETE/{id} /object-types`
-- **LinkTypes**: `POST/GET/GET/{id}/PUT/{id}/DELETE/{id} /link-types`
-- **SharedProperties**: `POST/GET/GET/{id}/PUT/{id}/DELETE/{id} /shared-properties`
-  - 支持按项目过滤：`GET /shared-properties?project_id={id}`
-- **DataSourceTables**: `POST/GET/GET/{id}/GET/name/{name}/DELETE/{id} /datasource-tables`
-  - 支持按表名查找：`GET /datasource-tables/name/{table_name}`
-- **Functions**: `POST/GET/GET/{id}/DELETE/{id} /functions`
-- **Actions**: `POST/GET/GET/{id}/DELETE/{id} /actions`
-
-每个资源支持：
-- `POST /{resource}` - 创建（使用 `*Create` DTO 验证）
-- `GET /{resource}` - 列表（支持 skip/limit 分页）
-- `GET /{resource}/{id}` - 获取单个（返回 `*Read` DTO）
-- `PUT /{resource}/{id}` - 更新（ObjectType、LinkType、SharedProperty 支持）
-- `DELETE /{resource}/{id}` - 删除
-
-#### 运行时操作 API (`/api/v1/execute`)
-
-执行操作和查询数据：
-
-- **`POST /action/run`** - 执行 Action
-  - 请求体：`{ "action_api_name": "strike", "source_id": "...", "params": {...} }`
-  - 流程：查找 ActionDefinition → 获取 backing_function_id → 执行函数 → 返回结果
-  
-- **`GET /objects/{type_api_name}`** - 查询对象实例
-  - 查询参数：
-    - `filters`: JSON 字符串（可选），例如：`{"status": "Ready", "fuel": 80}`
-    - `skip`: 分页偏移（默认 0）
-    - `limit`: 分页限制（默认 100，最大 1000）
-  - 示例：`GET /execute/objects/fighter?filters={"status":"Ready"}&skip=0&limit=10`
-  
-- **`POST /objects/{type_api_name}`** - 创建对象实例
-  - 请求体：`{ "properties": {...} }`
-  - 用于初始数据加载或程序化创建实例
-
-- **`GET /project/{project_id}/physical-properties`** - 获取项目的物理属性
-  - 聚合项目中所有对象类型的 property_schema
-  - 返回格式：`[{"property_name": "...", "data_type": "...", "belongs_to_object": "..."}]`
-
-### 前端模块
-
-#### 布局组件 (`src/layouts/`)
-- **`MainLayout.tsx`**: 主应用布局
-  - 左侧固定侧边栏导航
-  - 动态菜单项（根据路由显示 Studio 菜单）
-  - 面包屑导航支持
-
-#### 平台组件 (`src/platform/`)
-
-- **`OMA/`**: 本体管理组件
-  - `OntologyLibrary.tsx`: 本体库列表（项目列表视图）
-  
-- **`Studio/`**: 本体项目工作室
-  - `StudioLayout.tsx`: 工作室布局（嵌套侧边栏、面包屑）
-  - `TopologyView.tsx`: 拓扑总览（使用 ReactFlow 可视化）
-  - `ObjectTypeList.tsx`: 对象类型列表（带创建/编辑/删除）
-  - `ObjectTypeWizard.tsx`: 对象类型创建向导（3步：基本信息、数据源选择、属性映射）
-  - `ObjectTypeEditor.tsx`: 对象类型编辑器（标签页布局）
-  - `LinkTypeList.tsx`: 链接类型列表（带创建/编辑/删除）
-  - `LinkTypeWizard.tsx`: 链接类型创建向导（动态步骤：2步或3步，根据基数）
-  - `LinkTypeEditor.tsx`: 链接类型编辑器（响应式映射策略）
-  - `SharedPropertyList.tsx`: 公共属性列表（标准属性库 SPT）
-  - `SharedPropertyModal.tsx`: 公共属性模态框（可重用，支持创建/编辑）
-  - `PhysicalPropertyList.tsx`: 物理属性列表（聚合视图）
-  - `ActionDefinitionList.tsx`: 行为定义列表
-  - `FunctionList.tsx`: 函数列表
-  - `ExecutionLogList.tsx`: 运行日志列表
-  - `OntologyTest.tsx`: 本体测试页面（3列布局：动作库、编排画布、监控面板）
-
-#### 应用组件 (`src/apps/`)
-
-- **`Battlefield/`**: Battlefield 应用
-  - `Dashboard.tsx`: 战场态势仪表板
-    - 使用 React Leaflet 显示地图
-    - 实时显示 Fighter 和 Target 位置
-    - 支持执行打击操作
-
-#### API 客户端 (`src/api/`)
-- `axios.ts`: Axios 客户端（带请求/响应日志拦截器）
-- `client.ts`: 基础 API 客户端配置
+### Instance层（数据层）
+| 表名 | 说明 |
+|------|------|
+| `sys_object_instance` | 对象实例 |
+| `sys_link_instance` | 链接实例 |
+| `sys_action_log` | 执行日志 |
+| `sys_datasource_table` | 数据源表定义 |
 
 ## 测试
 
-项目包含完整的测试套件：
-
-### 运行测试
-
+### 后端测试
 ```bash
-# 运行所有测试
 cd backend
-pytest
-
-# 运行特定测试文件
-pytest tests/test_code_executor.py
-
-# 运行测试并查看覆盖率
-pytest --cov=app tests/
+pytest                          # 运行所有测试
+pytest tests/test_xxx.py       # 运行特定测试
+pytest --cov=app tests/        # 覆盖率报告
 ```
 
-### 测试覆盖
+### 前端测试
+```bash
+cd frontend
+npm run test                   # 单元测试
+npm run test:e2e              # E2E测试
+npm run test:e2e:ui           # E2E测试（UI模式）
+```
 
-- ✅ **单元测试**：核心功能模块测试
-- ✅ **集成测试**：API 端点和数据库操作测试
-- ✅ **边界条件测试**：空值、超长数据、特殊字符等
-- ✅ **并发测试**：高并发场景下的正确性和稳定性
-- ✅ **执行日志测试**：日志记录和查询功能
+## 日志
 
-**测试统计**：207 passed, 2 skipped
+### 后端日志
+- **位置**: `backend/logs/mdp.log`
+- **格式**: `{time} | {level} | {request_id} | {message}`
+- **轮转**: 10MB，保留10天
+
+### 请求追踪
+每个HTTP请求自动生成UUID，通过响应头 `X-Request-ID` 返回。
 
 ## 文档
 
-- **数据库架构文档**：`backend/docs/database_schema_relationships.md`
-  - 完整的表结构说明
-  - 关联关系图
-  - 映射流程说明
-  - 数据流向分析
-
-## 最新更新
-
-### v1.0.0 (2024-01)
-
-- ✅ 完成前后端完整联调
-- ✅ 实现新架构（物理表存储）
-- ✅ 代码执行引擎（内置/子进程）
-- ✅ 运行时上下文 API
-- ✅ 执行日志系统
-- ✅ 完整的测试覆盖
-- ✅ 边界条件和并发测试
-- ✅ 数据库架构文档
+- **API文档**: http://localhost:8000/docs
+- **数据库架构**: `backend/docs/database_schema_relationships.md`
+- **代码文档**: `docs/CODE_DOCUMENTATION.md`
 
 ## 许可证
 
 MIT
-
-

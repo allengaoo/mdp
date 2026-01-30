@@ -1,5 +1,8 @@
 /**
  * Action Definition List View component.
+ * 
+ * @todo V3 Migration: This component still uses V1 API.
+ * Migrate to V3 when backend Action endpoints are implemented.
  */
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Space, Tag, Modal, message, Typography } from 'antd';
@@ -62,8 +65,7 @@ const ActionDefinitionList: React.FC = () => {
       setData(response.data || []);
     } catch (error: any) {
       message.error(error.response?.data?.detail || 'Failed to fetch action definitions');
-      // Fallback to mock data
-      setData(MOCK_ACTIONS);
+      setData([]);
     } finally {
       setLoading(false);
     }
@@ -261,44 +263,5 @@ const ActionDefinitionList: React.FC = () => {
     </div>
   );
 };
-
-// Mock data for fallback
-const MOCK_ACTIONS: ActionDefinitionData[] = [
-  {
-    id: '1',
-    api_name: 'execute_strike',
-    display_name: 'Execute Strike Action',
-    description: 'Execute strike on target with specified weapon',
-    target_object_type_id: '10000000-0000-0000-0000-000000000002',
-    operation_type: 'function_logic',
-    parameters_schema: [
-      { name: 'Target ID', api_id: 'target_id', data_type: 'string', required: true },
-      { name: 'Weapon Type', api_id: 'weapon_type', data_type: 'string', required: true },
-    ],
-    validation_rules: {
-      param_validation: [
-        { expression: 'target_id != null', error_message: 'Target ID is required' },
-      ],
-      pre_condition: [
-        { expression: 'target.status == "Active"', error_message: 'Target must be active' },
-      ],
-    },
-  },
-  {
-    id: '2',
-    api_name: 'refuel',
-    display_name: 'Refuel Fighter',
-    description: 'Refuel fighter aircraft to specified fuel level',
-    target_object_type_id: '10000000-0000-0000-0000-000000000001',
-    operation_type: 'update_property',
-    parameters_schema: [
-      { name: 'Fighter ID', api_id: 'fighter_id', data_type: 'string', required: true },
-      { name: 'Fuel Level', api_id: 'fuel_level', data_type: 'number', required: true },
-    ],
-    property_mapping: {
-      fuel_level: 'fuel',
-    },
-  },
-];
 
 export default ActionDefinitionList;

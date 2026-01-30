@@ -1,6 +1,8 @@
 /**
  * Object Type Editor component.
  * Tab-based editor for editing existing object types.
+ * 
+ * @note V3 Migration: Uses api/ontology.ts functions which internally use V3 API.
  */
 import React, { useState, useEffect } from 'react';
 import {
@@ -12,12 +14,12 @@ import {
   Alert,
   Select,
   Table,
-  Space,
+  Tag,
   message,
 } from 'antd';
-import apiClient from '../../api/axios';
 import { useParams } from 'react-router-dom';
 import { fetchSharedProperties, updateObjectType, ISharedProperty } from '../../api/ontology';
+import { IV3ObjectTypeFull } from '../../api/v3/types';
 
 const { TabPane } = Tabs;
 const { TextArea } = Input;
@@ -29,14 +31,8 @@ interface PropertyMapping {
   useSharedProperty?: string;
 }
 
-interface ObjectTypeData {
-  id: string;
-  api_name: string;
-  display_name: string;
-  description?: string;
-  property_schema?: Record<string, string>;
-  project_id?: string;
-}
+// Use V3 ObjectTypeFull interface which includes datasource
+type ObjectTypeData = IV3ObjectTypeFull;
 
 interface ObjectTypeEditorProps {
   visible: boolean;
@@ -66,7 +62,7 @@ const ObjectTypeEditor: React.FC<ObjectTypeEditorProps> = ({
       const loadSharedProperties = async () => {
         try {
           setLoadingData(true);
-          const data = await fetchSharedProperties(projectId);
+          const data = await fetchSharedProperties();
           setSharedProperties(data);
         } catch (error: any) {
           message.error(error.response?.data?.detail || 'Failed to load shared properties');
@@ -86,16 +82,14 @@ const ObjectTypeEditor: React.FC<ObjectTypeEditorProps> = ({
         description: objectType.description || '',
       });
 
-      // Initialize property mappings from property_schema
-      if (objectType.property_schema) {
-        const mappings: PropertyMapping[] = Object.entries(objectType.property_schema).map(
-          ([propertyName, type]) => ({
-            rawColumn: propertyName, // In edit mode, we use property name as raw column
-            propertyName,
-            type,
-            useSharedProperty: undefined,
-          })
-        );
+      // Initialize property mappings from properties array (V3 format)
+      if (objectType.properties && objectType.properties.length > 0) {
+        const mappings: PropertyMapping[] = objectType.properties.map((prop) => ({
+          rawColumn: prop.api_name,
+          propertyName: prop.api_name,
+          type: (prop.data_type || 'STRING').toLowerCase(),
+          useSharedProperty: prop.shared_property_api_name ?? undefined,
+        }));
         setPropertyMappings(mappings);
       }
     }
@@ -321,18 +315,129 @@ const ObjectTypeEditor: React.FC<ObjectTypeEditorProps> = ({
           </Form>
         </TabPane>
         <TabPane tab="Datasource" key="datasource">
-          <Alert
-            message="Data Source (Read-only)"
-            description={`This object type is mapped to a data source. The data source cannot be changed after creation.`}
-            type="info"
-            showIcon
-            style={{ marginBottom: 16 }}
-          />
-          <div>
-            <p>
-              <strong>Data Source:</strong> {objectType.api_name} (Read-only)
-            </p>
-          </div>
+          {objectType.datasource ? (
+            <div>
+              <Alert
+                message="Data Source Information"
+                description={`This object type is connected to a data source via ${objectType.datasource.type === 'pipeline' ? 'Pipeline' : 'Mapping'}.`}
+                type="info"
+                showIcon
+                style={{ marginBottom: 16 }}
+              />
+              
+              {/* Pipeline Type Datasource */}
+              {objectType.datasource.type === 'pipeline' && (
+                <div>
+                  <h4 style={{ marginBottom: 12 }}>Pipeline Configuration</h4>
+                  <Table
+                    dataSource={[
+                      { key: 'dataset', label: 'Dataset', value: objectType.datasource.dataset_name || objectType.datasource.dataset_id },
+                      { key: 'table', label: 'Table Name', value: objectType.datasource.table_name || '-' },
+                      { key: 'connection', label: 'Connection', value: objectType.datasource.connection_name || objectType.datasource.connection_id },
+                      { key: 'db_type', label: 'Database Type', value: objectType.datasource.db_type || '-' },
+                      { key: 'mode', label: 'Pipeline Mode', value: objectType.datasource.pipeline_mode || '-' },
+                    ]}
+                    columns={[
+                      { title: 'Field', dataIndex: 'label', key: 'label', width: 150 },
+                      { title: 'Value', dataIndex: 'value', key: 'value' },
+                    ]}
+                    pagination={false}
+                    size="small"
+                    style={{ marginBottom: 24 }}
+                  />
+                  
+                  {objectType.datasource.sync_status && (
+                    <>
+                      <h4 style={{ marginBottom: 12 }}>Sync Status</h4>
+                      <Table
+                        dataSource={[
+                          { 
+                            key: 'status', 
+                            label: 'Status', 
+                            value: objectType.datasource.sync_status,
+                          },
+                          { 
+                            key: 'last_sync', 
+                            label: 'Last Sync Time', 
+                            value: objectType.datasource.last_sync_time 
+                              ? new Date(objectType.datasource.last_sync_time).toLocaleString() 
+                              : '-'
+                          },
+                          { 
+                            key: 'rows', 
+                            label: 'Rows Processed', 
+                            value: objectType.datasource.rows_processed !== undefined
+                              ? objectType.datasource.rows_processed.toLocaleString()
+                              : '-'
+                          },
+                        ]}
+                        columns={[
+                          { title: 'Field', dataIndex: 'label', key: 'label', width: 150 },
+                          { 
+                            title: 'Value', 
+                            key: 'value',
+                            render: (_: any, record: any) => {
+                              if (record.key === 'status') {
+                                const statusConfig: Record<string, { color: string; text: string }> = {
+                                  'SUCCESS': { color: 'success', text: 'Success' },
+                                  'RUNNING': { color: 'processing', text: 'Running' },
+                                  'FAILED': { color: 'error', text: 'Failed' },
+                                  'PENDING': { color: 'default', text: 'Pending' },
+                                };
+                                const config = statusConfig[record.value] || { color: 'default', text: record.value || 'N/A' };
+                                return <Tag color={config.color}>{config.text}</Tag>;
+                              }
+                              return record.value;
+                            }
+                          },
+                        ]}
+                        pagination={false}
+                        size="small"
+                      />
+                    </>
+                  )}
+                </div>
+              )}
+              
+              {/* Mapping Type Datasource */}
+              {objectType.datasource.type === 'mapping' && (
+                <div>
+                  <h4 style={{ marginBottom: 12 }}>Mapping Configuration</h4>
+                  <Table
+                    dataSource={[
+                      { key: 'table', label: 'Source Table', value: objectType.datasource.source_table_name || '-' },
+                      { key: 'connection', label: 'Connection', value: objectType.datasource.connection_name || objectType.datasource.connection_id },
+                      { key: 'db_type', label: 'Database Type', value: objectType.datasource.db_type || '-' },
+                    ]}
+                    columns={[
+                      { title: 'Field', dataIndex: 'label', key: 'label', width: 150 },
+                      { title: 'Value', dataIndex: 'value', key: 'value' },
+                    ]}
+                    pagination={false}
+                    size="small"
+                  />
+                </div>
+              )}
+            </div>
+          ) : (
+            <div>
+              <Alert
+                message="No Data Source Configured"
+                description="This object type is not currently connected to any data source. Configure a Pipeline or Mapping to connect it to data."
+                type="warning"
+                showIcon
+                style={{ marginBottom: 16 }}
+              />
+              <div>
+                <p>
+                  <strong>API Name:</strong> {objectType.api_name} (Read-only)
+                </p>
+                <p style={{ color: '#666', marginTop: 8 }}>
+                  To connect this object type to a data source, create a Pipeline or Mapping definition.
+                </p>
+              </div>
+            </div>
+          )}
         </TabPane>
         <TabPane tab="Property Mapping" key="mapping">
           <div style={{ marginBottom: 16 }}>

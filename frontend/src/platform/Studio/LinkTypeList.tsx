@@ -1,29 +1,28 @@
 /**
  * Link Type List View component.
+ * 
+ * @note V3 Migration: Now uses V3 project-scoped API for correct filtering.
  */
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Space, Tag, Modal, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { EditOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { useParams } from 'react-router-dom';
+import { 
+  fetchProjectLinkTypes,
+  fetchProjectObjectTypes,
+} from '../../api/v3/ontology';
+import { IV3LinkTypeFull, IV3ObjectTypeFull } from '../../api/v3/types';
 import apiClient from '../../api/axios';
 import LinkTypeWizard from './LinkTypeWizard';
 import LinkTypeEditor from './LinkTypeEditor';
 
-interface ObjectType {
-  id: string;
-  api_name: string;
-  display_name: string;
-}
+// Use V3 interfaces
+interface ObjectType extends IV3ObjectTypeFull {}
 
-interface LinkTypeData {
-  id: string;
-  api_name: string;
-  display_name: string;
-  description?: string;
-  source_type_id: string;
-  target_type_id: string;
-  cardinality: string;
+// Use V3 LinkTypeFull interface
+interface LinkTypeData extends IV3LinkTypeFull {
+  // Add compatibility fields if needed or ensure they match
 }
 
 const LinkTypeList: React.FC = () => {
@@ -35,16 +34,18 @@ const LinkTypeList: React.FC = () => {
   const [editorVisible, setEditorVisible] = useState(false);
   const [selectedLinkType, setSelectedLinkType] = useState<LinkTypeData | null>(null);
 
-  // Fetch link types from API
-  const fetchLinkTypes = async () => {
+  // Fetch link types from API (using V3 project-scoped endpoint)
+  const loadLinkTypes = async () => {
+    if (!projectId) {
+      setData([]);
+      return;
+    }
+    
     try {
       setLoading(true);
-      const response = await apiClient.get('/meta/link-types', {
-        params: {
-          limit: 100,
-        },
-      });
-      setData(response.data);
+      // Use V3 project-scoped API to get only link types related to this project
+      const linkTypes = await fetchProjectLinkTypes(projectId);
+      setData(linkTypes);
     } catch (error: any) {
       message.error(error.response?.data?.detail || 'Failed to fetch link types');
     } finally {
@@ -52,35 +53,38 @@ const LinkTypeList: React.FC = () => {
     }
   };
 
-  // Fetch object types for display
-  const fetchObjectTypes = async () => {
+  // Fetch object types for display (using V3 project-scoped endpoint)
+  const loadObjectTypes = async () => {
+    if (!projectId) {
+      setObjectTypes([]);
+      return;
+    }
+    
     try {
-      const response = await apiClient.get('/meta/object-types', {
-        params: {
-          limit: 100,
-        },
-      });
-      setObjectTypes(response.data);
+      // Use V3 project-scoped API to get object types for name lookup
+      const types = await fetchProjectObjectTypes(projectId);
+      setObjectTypes(types);
     } catch (error: any) {
-      // Silently fail, use mock data
+      // Silently fail
       console.error('Failed to fetch object types:', error);
     }
   };
 
   useEffect(() => {
-    fetchLinkTypes();
-    fetchObjectTypes();
+    loadLinkTypes();
+    loadObjectTypes();
   }, [projectId]);
 
-  // Get object type display name
-  const getObjectTypeName = (typeId: string): string => {
+  // Get object type display name (fallback if source_type_name/target_type_name not available)
+  const getObjectTypeName = (typeId: string | null): string => {
+    if (!typeId) return 'Unknown';
     const objType = objectTypes.find((ot) => ot.id === typeId);
-    return objType ? objType.display_name : typeId;
+    return objType?.display_name || objType?.api_name || typeId;
   };
 
   // Handle create success
   const handleCreateSuccess = () => {
-    fetchLinkTypes();
+    loadLinkTypes();
   };
 
   // Handle edit
@@ -91,13 +95,14 @@ const LinkTypeList: React.FC = () => {
 
   // Handle edit success
   const handleEditSuccess = () => {
-    fetchLinkTypes();
+    loadLinkTypes();
   };
 
   // Handle delete
   const handleDelete = (record: LinkTypeData) => {
-    const sourceName = getObjectTypeName(record.source_type_id);
-    const targetName = getObjectTypeName(record.target_type_id);
+    // V3 provides source_type_name and target_type_name directly
+    const sourceName = record.source_type_name || getObjectTypeName(record.source_object_def_id);
+    const targetName = record.target_type_name || getObjectTypeName(record.target_object_def_id);
     
     Modal.confirm({
       title: 'Delete Link Type',
@@ -116,9 +121,10 @@ const LinkTypeList: React.FC = () => {
       cancelText: 'Cancel',
       onOk: async () => {
         try {
+          // TODO: Migrate to V3 delete API when available
           await apiClient.delete(`/meta/link-types/${record.id}`);
           message.success('Link type deleted successfully');
-          fetchLinkTypes();
+          loadLinkTypes();
         } catch (error: any) {
           message.error(error.response?.data?.detail || 'Failed to delete link type');
         }
@@ -144,13 +150,15 @@ const LinkTypeList: React.FC = () => {
       title: 'Source Type',
       key: 'sourceType',
       width: 150,
-      render: (_, record) => getObjectTypeName(record.source_type_id),
+      // V3 provides source_type_name directly, fallback to lookup if not available
+      render: (_, record) => record.source_type_name || getObjectTypeName(record.source_object_def_id),
     },
     {
       title: 'Target Type',
       key: 'targetType',
       width: 150,
-      render: (_, record) => getObjectTypeName(record.target_type_id),
+      // V3 provides target_type_name directly, fallback to lookup if not available
+      render: (_, record) => record.target_type_name || getObjectTypeName(record.target_object_def_id),
     },
     {
       title: 'Cardinality',

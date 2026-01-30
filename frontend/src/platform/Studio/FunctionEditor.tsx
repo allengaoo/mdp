@@ -1,6 +1,10 @@
 /**
  * Function Definition Editor component.
  * Tabs layout for editing existing function definitions.
+ * 支持真实的代码试运行功能。
+ * 
+ * @todo V3 Migration: This component still uses V1 API.
+ * Migrate to V3 when backend Function endpoints are implemented.
  */
 import React, { useState, useEffect } from 'react';
 import {
@@ -16,11 +20,19 @@ import {
   message,
   Card,
   Typography,
+  Alert,
+  Spin,
+  Tag,
+  Collapse,
 } from 'antd';
 import {
   PlusOutlined,
   MinusCircleOutlined,
   PlayCircleOutlined,
+  CheckCircleOutlined,
+  CloseCircleOutlined,
+  LoadingOutlined,
+  CodeOutlined,
 } from '@ant-design/icons';
 import apiClient from '../../api/axios';
 import { useParams } from 'react-router-dom';
@@ -28,6 +40,7 @@ import { useParams } from 'react-router-dom';
 const { TextArea } = Input;
 const { TabPane } = Tabs;
 const { Text, Paragraph } = Typography;
+const { Panel } = Collapse;
 
 interface FunctionDefinitionData {
   id: string;
@@ -57,6 +70,18 @@ interface Parameter {
   required: boolean;
 }
 
+interface ExecutionResult {
+  success: boolean;
+  result: any;
+  stdout: string;
+  stderr: string;
+  execution_time_ms: number;
+  executor_used: string;
+  error_message?: string;
+  error_type?: string;
+  traceback?: string;
+}
+
 const DATA_TYPES = ['string', 'number', 'integer', 'boolean', 'object', 'array', 'date'];
 const OUTPUT_TYPES = ['VOID', 'STRING', 'INTEGER', 'DOUBLE', 'BOOLEAN', 'OBJECT', 'OBJECT_REF', 'ARRAY'];
 
@@ -72,7 +97,8 @@ const FunctionEditor: React.FC<FunctionEditorProps> = ({
   const [outputType, setOutputType] = useState<string>('VOID');
   const [codeContent, setCodeContent] = useState<string>('');
   const [testInputs, setTestInputs] = useState<Record<string, any>>({});
-  const [testResult, setTestResult] = useState<string>('');
+  const [testResult, setTestResult] = useState<ExecutionResult | null>(null);
+  const [isRunning, setIsRunning] = useState<boolean>(false);
 
   // Initialize form data
   useEffect(() => {
@@ -173,17 +199,59 @@ const FunctionEditor: React.FC<FunctionEditorProps> = ({
     setParameters(updated);
   };
 
-  // Handle test run
-  const handleTestRun = () => {
-    // Mock test execution
-    const mockResult = {
-      status: 'success',
-      result: outputType === 'VOID' ? null : `Mock result for ${outputType}`,
-      execution_time_ms: Math.floor(Math.random() * 100) + 10,
-      inputs: testInputs,
-    };
-    setTestResult(JSON.stringify(mockResult, null, 2));
-    message.success('Test run completed (mock)');
+  // Handle test run - 调用真实的后端 API
+  const handleTestRun = async () => {
+    if (!codeContent.trim()) {
+      message.warning('请先编写代码');
+      return;
+    }
+
+    setIsRunning(true);
+    setTestResult(null);
+
+    try {
+      // 构建执行上下文
+      const context = {
+        params: testInputs,
+        source: {
+          id: 'test-source-id',
+          object_type_id: funcData.bound_object_type_id || 'unknown',
+          properties: testInputs,
+        },
+      };
+
+      // 调用后端试运行 API
+      const response = await apiClient.post('/execute/code/test', {
+        code_content: codeContent,
+        context: context,
+        executor_type: 'auto',
+        timeout_seconds: 30,
+      });
+
+      const result: ExecutionResult = response.data;
+      setTestResult(result);
+
+      if (result.success) {
+        message.success(`执行成功 (${result.execution_time_ms}ms)`);
+      } else {
+        message.error(`执行失败: ${result.error_type || 'Error'}`);
+      }
+    } catch (error: any) {
+      const errorMessage = error.response?.data?.detail || error.message || '执行失败';
+      setTestResult({
+        success: false,
+        result: null,
+        stdout: '',
+        stderr: '',
+        execution_time_ms: 0,
+        executor_used: 'unknown',
+        error_message: errorMessage,
+        error_type: 'NetworkError',
+      });
+      message.error(`请求失败: ${errorMessage}`);
+    } finally {
+      setIsRunning(false);
+    }
   };
 
   const paramColumns = [
@@ -392,20 +460,156 @@ const FunctionEditor: React.FC<FunctionEditorProps> = ({
               </div>
 
               <div style={{ marginBottom: 16 }}>
-                <Button type="primary" icon={<PlayCircleOutlined />} onClick={handleTestRun}>
-                  Run
+                <Button
+                  type="primary"
+                  icon={isRunning ? <LoadingOutlined /> : <PlayCircleOutlined />}
+                  onClick={handleTestRun}
+                  loading={isRunning}
+                >
+                  {isRunning ? '执行中...' : '运行'}
                 </Button>
               </div>
 
+              {/* 执行结果展示 */}
               {testResult && (
                 <div>
-                  <h5>Output</h5>
-                  <TextArea
-                    value={testResult}
-                    readOnly
-                    rows={6}
-                    style={{ fontFamily: 'monospace', fontSize: 12, background: '#f5f5f5' }}
-                  />
+                  {/* 状态栏 */}
+                  <div style={{ marginBottom: 12 }}>
+                    {testResult.success ? (
+                      <Alert
+                        message={
+                          <Space>
+                            <CheckCircleOutlined />
+                            <span>执行成功</span>
+                            <Tag color="blue">{testResult.execution_time_ms}ms</Tag>
+                            <Tag color="green">{testResult.executor_used}</Tag>
+                          </Space>
+                        }
+                        type="success"
+                        showIcon={false}
+                      />
+                    ) : (
+                      <Alert
+                        message={
+                          <Space>
+                            <CloseCircleOutlined />
+                            <span>执行失败</span>
+                            <Tag color="red">{testResult.error_type}</Tag>
+                          </Space>
+                        }
+                        description={testResult.error_message}
+                        type="error"
+                        showIcon={false}
+                      />
+                    )}
+                  </div>
+
+                  {/* 返回值 */}
+                  {testResult.success && (
+                    <div style={{ marginBottom: 12 }}>
+                      <Text strong>返回值:</Text>
+                      <div
+                        style={{
+                          background: '#f6f8fa',
+                          padding: '8px 12px',
+                          borderRadius: 4,
+                          fontFamily: 'monospace',
+                          fontSize: 13,
+                          marginTop: 4,
+                          maxHeight: 150,
+                          overflow: 'auto',
+                        }}
+                      >
+                        {testResult.result === null
+                          ? <Text type="secondary">null</Text>
+                          : typeof testResult.result === 'object'
+                          ? JSON.stringify(testResult.result, null, 2)
+                          : String(testResult.result)}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 标准输出/错误 */}
+                  <Collapse ghost size="small">
+                    {testResult.stdout && (
+                      <Panel
+                        header={
+                          <Space>
+                            <CodeOutlined />
+                            <span>标准输出 (stdout)</span>
+                          </Space>
+                        }
+                        key="stdout"
+                      >
+                        <pre
+                          style={{
+                            background: '#1e1e1e',
+                            color: '#d4d4d4',
+                            padding: 12,
+                            borderRadius: 4,
+                            fontSize: 12,
+                            margin: 0,
+                            maxHeight: 200,
+                            overflow: 'auto',
+                          }}
+                        >
+                          {testResult.stdout}
+                        </pre>
+                      </Panel>
+                    )}
+                    {testResult.stderr && (
+                      <Panel
+                        header={
+                          <Space>
+                            <CodeOutlined style={{ color: '#ff4d4f' }} />
+                            <span style={{ color: '#ff4d4f' }}>标准错误 (stderr)</span>
+                          </Space>
+                        }
+                        key="stderr"
+                      >
+                        <pre
+                          style={{
+                            background: '#2d1f1f',
+                            color: '#ff6b6b',
+                            padding: 12,
+                            borderRadius: 4,
+                            fontSize: 12,
+                            margin: 0,
+                            maxHeight: 200,
+                            overflow: 'auto',
+                          }}
+                        >
+                          {testResult.stderr}
+                        </pre>
+                      </Panel>
+                    )}
+                    {testResult.traceback && (
+                      <Panel
+                        header={
+                          <Space>
+                            <CodeOutlined style={{ color: '#ff4d4f' }} />
+                            <span style={{ color: '#ff4d4f' }}>错误堆栈</span>
+                          </Space>
+                        }
+                        key="traceback"
+                      >
+                        <pre
+                          style={{
+                            background: '#2d1f1f',
+                            color: '#ff6b6b',
+                            padding: 12,
+                            borderRadius: 4,
+                            fontSize: 11,
+                            margin: 0,
+                            maxHeight: 300,
+                            overflow: 'auto',
+                          }}
+                        >
+                          {testResult.traceback}
+                        </pre>
+                      </Panel>
+                    )}
+                  </Collapse>
                 </div>
               )}
             </Card>

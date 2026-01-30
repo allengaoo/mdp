@@ -3,8 +3,10 @@ CRUD operations for meta models (ObjectType, LinkType, FunctionDefinition, Actio
 """
 from typing import List, Optional, Dict
 from datetime import datetime
+import uuid
+import json
 from sqlmodel import Session, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.core.logger import logger
 from app.models.meta import (
@@ -12,33 +14,290 @@ from app.models.meta import (
     ObjectType, ObjectTypeCreate, ObjectTypeUpdate, ObjectTypeRead,
     LinkType, LinkTypeCreate, LinkTypeUpdate, LinkTypeRead,
     FunctionDefinition, FunctionDefinitionCreate, FunctionDefinitionUpdate, FunctionDefinitionRead,
-    ActionDefinition, ActionDefinitionCreate, ActionDefinitionRead,
-    SharedProperty, SharedPropertyCreate, SharedPropertyUpdate, SharedPropertyRead
+    ActionDefinition, ActionDefinitionCreate, ActionDefinitionUpdate, ActionDefinitionRead,
+    SharedProperty, SharedPropertyCreate, SharedPropertyUpdate, SharedPropertyRead,
+    OntObjectType, OntLinkType,  # 底层表模型
+    # V3 DTOs for Actions & Logic page
+    ActionDefWithFunction,
+    FunctionDefForList,
 )
+from sqlalchemy import text
 
 
 # ==========================================
 # ObjectType CRUD
 # ==========================================
 
+def _check_table_exists(session: Session, table_name: str) -> bool:
+    """检查表是否存在（区分表和视图）。"""
+    try:
+        result = session.exec(text(
+            "SELECT TABLE_TYPE FROM information_schema.tables "
+            "WHERE table_schema = DATABASE() AND table_name = :table_name"
+        ), params={"table_name": table_name})
+        row = result.first()
+        return row is not None and row[0] == 'BASE TABLE'
+    except Exception:
+        return False
+
+
+def _use_ont_tables(session: Session) -> bool:
+    """检查是否应该使用 ont_* 底层表（新架构）。"""
+    return _check_table_exists(session, "ont_object_type")
+
+
+def _parse_json_field(value) -> Optional[Dict]:
+    """解析可能是 JSON 字符串或已解析字典的字段。"""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    return None
+
+
+def _build_property_schema_from_v3(properties: List[Dict]) -> Optional[Dict]:
+    """将 V3 属性列表转为 meta 层 ObjectType.property_schema 的字典格式。"""
+    if not properties:
+        return None
+    out = {}
+    for p in properties:
+        api_name = p.get("api_name")
+        if not api_name:
+            continue
+        prop_info = {
+            "label": p.get("display_name") or api_name,
+            "type": p.get("data_type") or "STRING",
+            "required": p.get("is_required", False),
+        }
+        # 仅当关联了共享属性时才包含 shared_property_id
+        if p.get("property_def_id"):
+            prop_info["shared_property_id"] = p.get("property_def_id")
+        out[api_name] = prop_info
+    return out
+
+
 def create_object_type(session: Session, obj_in: ObjectTypeCreate) -> ObjectType:
-    """Create a new ObjectType."""
+    """Create a new ObjectType.
+    
+    优先使用 V3 架构（meta_object_type_def），如果不存在则使用 ont_object_type，
+    最后才使用旧架构（meta_object_type 表，如果它是表而不是视图）。
+    """
     logger.info(f"Creating ObjectType: {obj_in.api_name}")
     
     try:
         obj_data = obj_in.model_dump()
-        # Set created_at and updated_at to current time if not provided
         now = datetime.now()
-        if 'created_at' not in obj_data or obj_data['created_at'] is None:
-            obj_data['created_at'] = now
-        if 'updated_at' not in obj_data or obj_data['updated_at'] is None:
-            obj_data['updated_at'] = now
-        db_obj = ObjectType(**obj_data)
-        session.add(db_obj)
-        session.commit()
-        session.refresh(db_obj)
-        logger.info(f"ObjectType created successfully: {obj_in.api_name} (ID: {db_obj.id})")
-        return db_obj
+        obj_id = str(uuid.uuid4())
+        
+        # 优先检查 V3 架构表是否存在
+        use_v3_architecture = _check_table_exists(session, "meta_object_type_def")
+        
+        if use_v3_architecture:
+            # 使用 V3 架构：meta_object_type_def + meta_object_type_ver
+            logger.info("Using V3 architecture: writing to meta_object_type_def")
+            from app.engine.v3.ontology_crud import (
+                create_object_type_def,
+                create_object_type_ver
+            )
+            from app.models.ontology import (
+                ObjectTypeDefCreate,
+                ObjectTypeVerCreate
+            )
+            
+            # 创建 ObjectTypeDef
+            obj_def_create = ObjectTypeDefCreate(api_name=obj_in.api_name)
+            obj_def = create_object_type_def(session, obj_def_create)
+            
+            # 创建 ObjectTypeVer
+            obj_ver_create = ObjectTypeVerCreate(
+                def_id=obj_def.id,
+                version_number="v1.0",
+                display_name=obj_in.display_name,
+                description=obj_in.description,
+                status="DRAFT"
+            )
+            obj_ver = create_object_type_ver(session, obj_ver_create, set_as_current=True)
+            
+            # 创建属性绑定（如果有 property_schema）
+            if obj_in.property_schema:
+                from app.engine.v3.ontology_crud import bind_property_to_object_ver
+                from app.models.ontology import ObjectVerPropertyCreate, SharedPropertyDef
+                
+                # 映射前端类型到后端类型
+                type_mapping = {
+                    "STRING": "STRING",
+                    "INTEGER": "INTEGER",
+                    "NUMBER": "DOUBLE",
+                    "DOUBLE": "DOUBLE",
+                    "BOOLEAN": "BOOLEAN",
+                    "DATETIME": "DATE",
+                    "DATE": "DATE",
+                }
+                
+                for prop_key, prop_data in obj_in.property_schema.items():
+                    prop_type = prop_data.get("type", "STRING")
+                    data_type = type_mapping.get(str(prop_type).upper(), "STRING")
+                    
+                    # 只有当用户显式选择了共享属性时才关联
+                    shared_property_id = prop_data.get("shared_property_id")
+                    if shared_property_id:
+                        # 验证共享属性存在
+                        shared_prop = session.get(SharedPropertyDef, shared_property_id)
+                        if not shared_prop:
+                            logger.warning(f"Shared property not found: {shared_property_id}, treating as local property")
+                            shared_property_id = None
+                    
+                    # 绑定属性到对象版本
+                    prop_binding_create = ObjectVerPropertyCreate(
+                        property_def_id=shared_property_id,  # 可为空（本地属性）
+                        local_api_name=prop_key,
+                        local_display_name=prop_data.get("label", prop_key),
+                        local_data_type=data_type,
+                        is_primary_key=(prop_key == "id"),  # 假设 id 是主键
+                        is_required=prop_data.get("required", False)
+                    )
+                    bind_property_to_object_ver(session, obj_ver.id, prop_binding_create)
+            
+            # 如果传了 project_id，创建项目绑定
+            if obj_in.project_id:
+                from app.engine.v3.context_crud import create_project_object_binding
+                from app.models.context import ProjectObjectBindingCreate
+                
+                try:
+                    binding_create = ProjectObjectBindingCreate(
+                        project_id=obj_in.project_id,
+                        object_def_id=obj_def.id,
+                        used_version_id=obj_ver.id,
+                        is_visible=True
+                    )
+                    create_project_object_binding(session, binding_create)
+                    logger.info(f"[V3] Created project binding: project={obj_in.project_id}, object={obj_def.id}")
+                except Exception as e:
+                    logger.warning(f"[V3] Failed to create project binding: {e}")
+                    # 不阻止创建，只记录警告
+            
+            # 如果传了数据源（来自同步任务），创建映射定义以便 Datasource Tab 显示
+            if getattr(obj_in, "source_connection_id", None) and getattr(obj_in, "source_table_name", None):
+                from app.engine.v3.mapping_crud import create_mapping
+                from app.models.context import ObjectMappingDefCreate
+                try:
+                    mapping_create = ObjectMappingDefCreate(
+                        object_def_id=obj_def.id,
+                        source_connection_id=obj_in.source_connection_id,
+                        source_table_name=obj_in.source_table_name,
+                        mapping_spec={"nodes": [], "edges": []},
+                    )
+                    mapping = create_mapping(session, mapping_create)
+                    mapping.status = "PUBLISHED"
+                    session.add(mapping)
+                    session.commit()
+                    logger.info(f"[V3] Created mapping for datasource: object={obj_def.id}, table={obj_in.source_table_name}")
+                except Exception as e:
+                    logger.warning(f"[V3] Failed to create mapping for datasource: {e}")
+                    session.rollback()
+            
+            # 从视图读取返回（保持兼容）
+            result = session.exec(text(
+                "SELECT id, api_name, display_name, description, project_id, created_at, updated_at, property_schema "
+                "FROM meta_object_type WHERE id = :id"
+            ), params={"id": obj_def.id}).first()
+            
+            if result:
+                return ObjectType(
+                    id=result[0],
+                    api_name=result[1],
+                    display_name=result[2],
+                    description=result[3],
+                    project_id=result[4],
+                    created_at=result[5],
+                    updated_at=result[6],
+                    property_schema=_parse_json_field(result[7])
+                )
+        elif _use_ont_tables(session):
+            logger.info("Using new architecture: writing to ont_object_type")
+            
+            # 新架构需要 backing_dataset_id，如果没有则创建一个虚拟的
+            # 先检查是否有对应的 dataset
+            dataset_id = f"ds-{obj_in.api_name}"
+            
+            # 检查 dataset 是否存在，不存在则创建
+            existing_ds = session.exec(text(
+                "SELECT id FROM sys_dataset WHERE id = :id"
+            ), params={"id": dataset_id}).first()
+            
+            if not existing_ds:
+                # 创建虚拟 dataset
+                session.exec(text(
+                    "INSERT INTO sys_dataset (id, api_name, display_name, storage_type, storage_location) "
+                    "VALUES (:id, :api_name, :display_name, 'VIRTUAL', :storage_location)"
+                ), params={
+                    "id": dataset_id,
+                    "api_name": f"dataset_{obj_in.api_name}",
+                    "display_name": f"Dataset for {obj_in.display_name}",
+                    "storage_location": f"virtual_{obj_in.api_name}"
+                })
+            
+            # 写入 ont_object_type
+            session.exec(text(
+                "INSERT INTO ont_object_type (id, api_name, display_name, description, backing_dataset_id, created_at) "
+                "VALUES (:id, :api_name, :display_name, :description, :backing_dataset_id, :created_at)"
+            ), params={
+                "id": obj_id,
+                "api_name": obj_in.api_name,
+                "display_name": obj_in.display_name,
+                "description": obj_data.get('description'),
+                "backing_dataset_id": dataset_id,
+                "created_at": now
+            })
+            
+            session.commit()
+            
+            # 从视图读取返回（保持兼容）
+            result = session.exec(text(
+                "SELECT id, api_name, display_name, description, project_id, created_at, updated_at, property_schema "
+                "FROM meta_object_type WHERE id = :id"
+            ), params={"id": obj_id}).first()
+            
+            if result:
+                return ObjectType(
+                    id=result[0],
+                    api_name=result[1],
+                    display_name=result[2],
+                    description=result[3],
+                    project_id=result[4],
+                    created_at=result[5],
+                    updated_at=result[6],
+                    property_schema=_parse_json_field(result[7])
+                )
+        else:
+            # 检查 meta_object_type 是否是表（而不是视图）
+            if _check_table_exists(session, "meta_object_type"):
+                # 旧架构：直接写入 meta_object_type 表
+                logger.info("Using old architecture: writing to meta_object_type table")
+                if 'created_at' not in obj_data or obj_data['created_at'] is None:
+                    obj_data['created_at'] = now
+                if 'updated_at' not in obj_data or obj_data['updated_at'] is None:
+                    obj_data['updated_at'] = now
+                db_obj = ObjectType(**obj_data)
+                session.add(db_obj)
+                session.commit()
+                session.refresh(db_obj)
+                logger.info(f"ObjectType created successfully: {obj_in.api_name} (ID: {db_obj.id})")
+                return db_obj
+            else:
+                # meta_object_type 是视图，无法直接写入
+                # 应该使用 V3 架构，但表不存在，抛出错误
+                raise OperationalError(
+                    "Cannot insert into meta_object_type (it is a view, not a table). "
+                    "Please ensure meta_object_type_def table exists for V3 architecture.",
+                    None, None
+                )
+            
     except IntegrityError as e:
         session.rollback()
         logger.error(f"Failed to create ObjectType {obj_in.api_name}: Integrity error - {str(e)}")
@@ -73,25 +332,188 @@ def update_object_type(
     obj_id: str,
     obj_in: ObjectTypeUpdate
 ) -> Optional[ObjectType]:
-    """Update an existing ObjectType."""
+    """Update an existing ObjectType.
+    
+    优先使用 V3 架构（meta_object_type_def + meta_object_type_ver），更新版本与属性绑定；
+    否则若 ont_object_type 存在则更新该表；
+    否则更新 meta_object_type 表（旧架构，仅当其为表而非视图时）。
+    """
     logger.info(f"Updating ObjectType: {obj_id}")
     
     try:
-        db_obj = session.get(ObjectType, obj_id)
-        if not db_obj:
-            logger.warning(f"ObjectType not found: {obj_id}")
+        update_data = obj_in.model_dump(exclude_unset=True)
+        
+        # V3 架构：更新 meta_object_type_ver 与属性绑定，不更新视图 meta_object_type
+        use_v3_architecture = _check_table_exists(session, "meta_object_type_def")
+        if use_v3_architecture:
+            from app.engine.v3.ontology_crud import (
+                get_object_type_def,
+                get_object_type_full,
+                bind_property_to_object_ver,
+                get_object_ver_properties,
+                unbind_property_from_object_ver,
+                update_object_type_ver,
+            )
+            from app.models.ontology import (
+                SharedPropertyDef,
+                ObjectVerPropertyCreate,
+                ObjectTypeVerUpdate,
+            )
+            
+            obj_def = get_object_type_def(session, obj_id)
+            if not obj_def or not obj_def.current_version_id:
+                logger.warning(f"ObjectType or current version not found in V3: {obj_id}")
+                return None
+            
+            ver_id = obj_def.current_version_id
+            # 更新版本基本信息
+            ver_update = ObjectTypeVerUpdate(
+                display_name=update_data.get("display_name"),
+                description=update_data.get("description"),
+            )
+            update_object_type_ver(session, ver_id, ver_update)
+            
+            # 同步属性绑定（property_schema）
+            if "property_schema" in update_data and update_data["property_schema"]:
+                property_schema = update_data["property_schema"]
+                type_mapping = {
+                    "STRING": "STRING", "INTEGER": "INTEGER", "NUMBER": "DOUBLE",
+                    "DOUBLE": "DOUBLE", "BOOLEAN": "BOOLEAN", "DATETIME": "DATE", "DATE": "DATE",
+                }
+                current_bindings = get_object_ver_properties(session, ver_id)
+                current_by_name = {b["api_name"]: b for b in current_bindings}
+                
+                for prop_key, prop_data in property_schema.items():
+                    if not isinstance(prop_data, dict):
+                        continue
+                    prop_type = prop_data.get("type", "STRING")
+                    data_type = type_mapping.get(str(prop_type).upper(), "STRING")
+                    
+                    # 只有当用户显式选择了共享属性时才关联
+                    shared_property_id = prop_data.get("shared_property_id")
+                    if shared_property_id:
+                        shared_prop = session.get(SharedPropertyDef, shared_property_id)
+                        if not shared_prop:
+                            logger.warning(f"Shared property not found: {shared_property_id}, treating as local")
+                            shared_property_id = None
+                    
+                    existing = current_by_name.get(prop_key)
+                    if existing:
+                        # Update existing binding (e.g. change shared property link)
+                        from app.models.ontology import ObjectVerProperty
+                        binding_obj = session.get(ObjectVerProperty, existing["binding_id"])
+                        if binding_obj:
+                            binding_obj.property_def_id = shared_property_id
+                            binding_obj.local_display_name = prop_data.get("label", prop_key)
+                            binding_obj.local_data_type = data_type
+                            binding_obj.is_required = prop_data.get("required", False)
+                            session.add(binding_obj)
+                            session.flush()
+                            logger.info(f"[V3] Updated property binding: api_name={prop_key}, shared_property_id={shared_property_id}")
+                        continue
+                    
+                    # 创建新属性绑定
+                    prop_binding_create = ObjectVerPropertyCreate(
+                        property_def_id=shared_property_id,  # 可为空（本地属性）
+                        local_api_name=prop_key,
+                        local_display_name=prop_data.get("label", prop_key),
+                        local_data_type=data_type,
+                        is_primary_key=(prop_key == "id"),
+                        is_required=prop_data.get("required", False),
+                    )
+                    bind_property_to_object_ver(session, ver_id, prop_binding_create)
+                
+                # 删除不在 property_schema 中的绑定
+                for b in current_bindings:
+                    if b["api_name"] not in property_schema:
+                        unbind_property_from_object_ver(session, b["binding_id"])
+            
+            # 确保所有属性更新都已提交
+            session.commit()
+            
+            full = get_object_type_full(session, obj_id)
+            if full:
+                return ObjectType(
+                    id=full.id,
+                    api_name=full.api_name,
+                    display_name=full.display_name or full.api_name,
+                    description=full.description,
+                    project_id=None,
+                    created_at=obj_def.created_at or datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                    property_schema=_build_property_schema_from_v3(full.properties) if full.properties else None,
+                )
             return None
         
-        # Update fields
-        update_data = obj_in.model_dump(exclude_unset=True)
-        for field, value in update_data.items():
-            setattr(db_obj, field, value)
-        
-        session.add(db_obj)
-        session.commit()
-        session.refresh(db_obj)
-        logger.info(f"ObjectType updated successfully: {obj_id}")
-        return db_obj
+        if _use_ont_tables(session):
+            logger.info("Using ont_object_type: updating ont_object_type")
+            
+            # 检查记录是否存在
+            existing = session.exec(text(
+                "SELECT id FROM ont_object_type WHERE id = :id"
+            ), params={"id": obj_id}).first()
+            
+            if not existing:
+                logger.warning(f"ObjectType not found in ont_object_type: {obj_id}")
+                return None
+            
+            # 构建更新语句
+            set_clauses = []
+            params = {"id": obj_id}
+            
+            if 'display_name' in update_data:
+                set_clauses.append("display_name = :display_name")
+                params["display_name"] = update_data['display_name']
+            if 'description' in update_data:
+                set_clauses.append("description = :description")
+                params["description"] = update_data['description']
+            
+            if set_clauses:
+                sql = f"UPDATE ont_object_type SET {', '.join(set_clauses)} WHERE id = :id"
+                session.exec(text(sql), params=params)
+                session.commit()
+            
+            # 从视图读取返回
+            result = session.exec(text(
+                "SELECT id, api_name, display_name, description, project_id, created_at, updated_at, property_schema "
+                "FROM meta_object_type WHERE id = :id"
+            ), params={"id": obj_id}).first()
+            
+            if result:
+                logger.info(f"ObjectType updated successfully: {obj_id}")
+                return ObjectType(
+                    id=result[0],
+                    api_name=result[1],
+                    display_name=result[2],
+                    description=result[3],
+                    project_id=result[4],
+                    created_at=result[5],
+                    updated_at=result[6],
+                    property_schema=_parse_json_field(result[7])
+                )
+            return None
+        else:
+            # 旧架构：仅当 meta_object_type 为表（非视图）时才可更新
+            if not _check_table_exists(session, "meta_object_type"):
+                logger.warning(
+                    "meta_object_type is a view and cannot be updated. "
+                    "Object type was created in V3; updates are applied via meta_object_type_ver."
+                )
+                return None
+            db_obj = session.get(ObjectType, obj_id)
+            if not db_obj:
+                logger.warning(f"ObjectType not found: {obj_id}")
+                return None
+            
+            for field, value in update_data.items():
+                setattr(db_obj, field, value)
+            
+            session.add(db_obj)
+            session.commit()
+            session.refresh(db_obj)
+            logger.info(f"ObjectType updated successfully: {obj_id}")
+            return db_obj
+            
     except IntegrityError as e:
         session.rollback()
         logger.error(f"Failed to update ObjectType {obj_id}: Integrity error - {str(e)}")
@@ -103,19 +525,119 @@ def update_object_type(
 
 
 def delete_object_type(session: Session, obj_id: str) -> bool:
-    """Delete ObjectType by ID."""
+    """Delete ObjectType by ID.
+    
+    优先使用 V3 架构：按依赖顺序删除 ObjectVerProperty → ObjectTypeVer → ProjectObjectBinding
+    → ObjectMappingDef → ObjectTypeDef（不操作视图 meta_object_type）；
+    否则若 ont_object_type 存在则从该表删除；
+    否则从 meta_object_type 表删除（仅当其为表而非视图时）。
+    """
     logger.info(f"Deleting ObjectType: {obj_id}")
     
     try:
-        db_obj = session.get(ObjectType, obj_id)
-        if not db_obj:
-            logger.warning(f"ObjectType not found: {obj_id}")
-            return False
+        # V3 架构：删除 meta_object_type_def 及关联表，不操作视图
+        use_v3_architecture = _check_table_exists(session, "meta_object_type_def")
+        if use_v3_architecture:
+            from app.engine.v3.ontology_crud import (
+                get_object_type_def,
+                list_object_type_vers,
+                get_object_ver_properties,
+                unbind_property_from_object_ver,
+            )
+            from app.models.ontology import ObjectTypeDef
+            from app.engine.v3.context_crud import (
+                get_object_project_bindings,
+                delete_project_object_binding,
+            )
+            from app.engine.v3.mapping_crud import list_mappings, delete_mapping
+            
+            obj_def = get_object_type_def(session, obj_id)
+            if not obj_def:
+                logger.warning(f"ObjectTypeDef not found in V3: {obj_id}")
+                return False
+            
+            # 1. 删除该对象类型下所有版本的属性绑定
+            versions = list_object_type_vers(session, obj_id)
+            for ver in versions:
+                props = get_object_ver_properties(session, ver.id)
+                for p in props:
+                    unbind_property_from_object_ver(session, p["binding_id"])
+            
+            # 2. 删除项目绑定（必须在删除版本之前，因 used_version_id 外键约束）
+            bindings = get_object_project_bindings(session, obj_id)
+            for b in bindings:
+                delete_project_object_binding(session, b.project_id, b.object_def_id)
+            
+            # 3. 删除映射定义
+            mappings = list_mappings(session, object_def_id=obj_id)
+            for m in mappings:
+                delete_mapping(session, m.id)
+            
+            # 4. 清除 def 的 current_version_id（必须在删除版本之前）
+            obj_def = session.get(ObjectTypeDef, obj_id)
+            if obj_def:
+                obj_def.current_version_id = None
+                session.add(obj_def)
+                session.commit()
+            
+            # 5. 删除所有版本（重新查询，因上一步可能已 commit）
+            versions = list_object_type_vers(session, obj_id)
+            for ver in versions:
+                session.delete(ver)
+            session.commit()
+            
+            # 6. 删除 ObjectTypeDef
+            obj_def = session.get(ObjectTypeDef, obj_id)
+            if obj_def:
+                session.delete(obj_def)
+                session.commit()
+            
+            logger.info(f"ObjectType (V3) deleted successfully: {obj_id}")
+            return True
         
-        session.delete(db_obj)
-        session.commit()
-        logger.info(f"ObjectType deleted successfully: {obj_id}")
-        return True
+        if _use_ont_tables(session):
+            logger.info("Using new architecture: deleting from ont_object_type")
+            
+            # 检查记录是否存在
+            existing = session.exec(text(
+                "SELECT id FROM ont_object_type WHERE id = :id"
+            ), params={"id": obj_id}).first()
+            
+            if not existing:
+                logger.warning(f"ObjectType not found in ont_object_type: {obj_id}")
+                return False
+            
+            # 同时删除关联的 dataset
+            session.exec(text(
+                "DELETE FROM sys_dataset WHERE id = :ds_id"
+            ), params={"ds_id": f"ds-{obj_id}"})
+            
+            # 删除 object type
+            session.exec(text(
+                "DELETE FROM ont_object_type WHERE id = :id"
+            ), params={"id": obj_id})
+            
+            session.commit()
+            logger.info(f"ObjectType deleted successfully: {obj_id}")
+            return True
+        else:
+            # 旧架构：仅当 meta_object_type 为表（非视图）时才可删除
+            if not _check_table_exists(session, "meta_object_type"):
+                logger.warning(
+                    "meta_object_type is a view and cannot be deleted. "
+                    "Object type lives in V3; use V3 delete (ObjectTypeDef and related tables)."
+                )
+                return False
+            db_obj = session.get(ObjectType, obj_id)
+            if not db_obj:
+                logger.warning(f"ObjectType not found: {obj_id}")
+                return False
+            
+            session.delete(db_obj)
+            session.commit()
+            logger.info(f"ObjectType deleted successfully: {obj_id}")
+            return True
+            
     except Exception as e:
         session.rollback()
         logger.error(f"Failed to delete ObjectType {obj_id}: {str(e)}")
@@ -126,17 +648,65 @@ def delete_object_type(session: Session, obj_id: str) -> bool:
 # LinkType CRUD
 # ==========================================
 
+def _use_ont_link_tables(session: Session) -> bool:
+    """检查是否应该使用 ont_link_type 底层表（新架构）。"""
+    return _check_table_exists(session, "ont_link_type")
+
+
 def create_link_type(session: Session, obj_in: LinkTypeCreate) -> LinkType:
-    """Create a new LinkType."""
+    """Create a new LinkType.
+    
+    如果底层表 ont_link_type 存在，则写入该表；
+    否则写入 meta_link_type 表（旧架构）。
+    """
     logger.info(f"Creating LinkType: {obj_in.api_name}")
     
     try:
-        db_obj = LinkType(**obj_in.model_dump())
-        session.add(db_obj)
-        session.commit()
-        session.refresh(db_obj)
-        logger.info(f"LinkType created successfully: {obj_in.api_name} (ID: {db_obj.id})")
-        return db_obj
+        obj_id = str(uuid.uuid4())
+        
+        if _use_ont_link_tables(session):
+            logger.info("Using new architecture: writing to ont_link_type")
+            
+            # 写入 ont_link_type（注意字段名映射）
+            session.exec(text(
+                "INSERT INTO ont_link_type (id, api_name, display_name, source_object_type_id, target_object_type_id, cardinality) "
+                "VALUES (:id, :api_name, :display_name, :source_type_id, :target_type_id, :cardinality)"
+            ), params={
+                "id": obj_id,
+                "api_name": obj_in.api_name,
+                "display_name": obj_in.display_name,
+                "source_type_id": obj_in.source_type_id,
+                "target_type_id": obj_in.target_type_id,
+                "cardinality": obj_in.cardinality
+            })
+            
+            session.commit()
+            
+            # 从视图读取返回（保持兼容）
+            result = session.exec(text(
+                "SELECT id, api_name, display_name, source_type_id, target_type_id, cardinality "
+                "FROM meta_link_type WHERE id = :id"
+            ), params={"id": obj_id}).first()
+            
+            if result:
+                return LinkType(
+                    id=result[0],
+                    api_name=result[1],
+                    display_name=result[2],
+                    source_type_id=result[3],
+                    target_type_id=result[4],
+                    cardinality=result[5]
+                )
+        else:
+            # 旧架构
+            logger.info("Using old architecture: writing to meta_link_type")
+            db_obj = LinkType(**obj_in.model_dump())
+            session.add(db_obj)
+            session.commit()
+            session.refresh(db_obj)
+            logger.info(f"LinkType created successfully: {obj_in.api_name} (ID: {db_obj.id})")
+            return db_obj
+            
     except IntegrityError as e:
         session.rollback()
         logger.error(f"Failed to create LinkType {obj_in.api_name}: Integrity error - {str(e)}")
@@ -164,25 +734,83 @@ def update_link_type(
     obj_id: str,
     obj_in: LinkTypeUpdate
 ) -> Optional[LinkType]:
-    """Update an existing LinkType."""
+    """Update an existing LinkType.
+    
+    如果底层表 ont_link_type 存在，则更新该表；
+    否则更新 meta_link_type 表（旧架构）。
+    """
     logger.info(f"Updating LinkType: {obj_id}")
     
     try:
-        db_obj = session.get(LinkType, obj_id)
-        if not db_obj:
-            logger.warning(f"LinkType not found: {obj_id}")
-            return None
-        
-        # Update fields
         update_data = obj_in.model_dump(exclude_unset=True)
-        for field, value in update_data.items():
-            setattr(db_obj, field, value)
         
-        session.add(db_obj)
-        session.commit()
-        session.refresh(db_obj)
-        logger.info(f"LinkType updated successfully: {obj_id}")
-        return db_obj
+        if _use_ont_link_tables(session):
+            logger.info("Using new architecture: updating ont_link_type")
+            
+            # 检查记录是否存在
+            existing = session.exec(text(
+                "SELECT id FROM ont_link_type WHERE id = :id"
+            ), params={"id": obj_id}).first()
+            
+            if not existing:
+                logger.warning(f"LinkType not found in ont_link_type: {obj_id}")
+                return None
+            
+            # 构建更新语句（注意字段名映射）
+            set_clauses = []
+            params = {"id": obj_id}
+            
+            if 'display_name' in update_data:
+                set_clauses.append("display_name = :display_name")
+                params["display_name"] = update_data['display_name']
+            if 'source_type_id' in update_data:
+                set_clauses.append("source_object_type_id = :source_type_id")
+                params["source_type_id"] = update_data['source_type_id']
+            if 'target_type_id' in update_data:
+                set_clauses.append("target_object_type_id = :target_type_id")
+                params["target_type_id"] = update_data['target_type_id']
+            if 'cardinality' in update_data:
+                set_clauses.append("cardinality = :cardinality")
+                params["cardinality"] = update_data['cardinality']
+            
+            if set_clauses:
+                sql = f"UPDATE ont_link_type SET {', '.join(set_clauses)} WHERE id = :id"
+                session.exec(text(sql), params=params)
+                session.commit()
+            
+            # 从视图读取返回
+            result = session.exec(text(
+                "SELECT id, api_name, display_name, source_type_id, target_type_id, cardinality "
+                "FROM meta_link_type WHERE id = :id"
+            ), params={"id": obj_id}).first()
+            
+            if result:
+                logger.info(f"LinkType updated successfully: {obj_id}")
+                return LinkType(
+                    id=result[0],
+                    api_name=result[1],
+                    display_name=result[2],
+                    source_type_id=result[3],
+                    target_type_id=result[4],
+                    cardinality=result[5]
+                )
+            return None
+        else:
+            # 旧架构
+            db_obj = session.get(LinkType, obj_id)
+            if not db_obj:
+                logger.warning(f"LinkType not found: {obj_id}")
+                return None
+            
+            for field, value in update_data.items():
+                setattr(db_obj, field, value)
+            
+            session.add(db_obj)
+            session.commit()
+            session.refresh(db_obj)
+            logger.info(f"LinkType updated successfully: {obj_id}")
+            return db_obj
+            
     except IntegrityError as e:
         session.rollback()
         logger.error(f"Failed to update LinkType {obj_id}: Integrity error - {str(e)}")
@@ -194,19 +822,73 @@ def update_link_type(
 
 
 def delete_link_type(session: Session, obj_id: str) -> bool:
-    """Delete LinkType by ID."""
+    """Delete LinkType by ID.
+    
+    如果底层表 ont_link_type 存在，则从该表删除；
+    否则从 meta_link_type 表删除（旧架构）。
+    """
     logger.info(f"Deleting LinkType: {obj_id}")
     
     try:
-        db_obj = session.get(LinkType, obj_id)
-        if not db_obj:
-            logger.warning(f"LinkType not found: {obj_id}")
-            return False
-        
-        session.delete(db_obj)
-        session.commit()
-        logger.info(f"LinkType deleted successfully: {obj_id}")
-        return True
+        if _use_ont_link_tables(session):
+            logger.info("Using new architecture: deleting from ont_link_type")
+            
+            # 检查记录是否存在
+            existing = session.exec(text(
+                "SELECT id FROM ont_link_type WHERE id = :id"
+            ), params={"id": obj_id}).first()
+            
+            if not existing:
+                logger.warning(f"LinkType not found in ont_link_type: {obj_id}")
+                return False
+            
+            # 删除 link type
+            session.exec(text(
+                "DELETE FROM ont_link_type WHERE id = :id"
+            ), params={"id": obj_id})
+            
+            session.commit()
+            logger.info(f"LinkType deleted successfully: {obj_id}")
+            return True
+        else:
+            # 旧架构：仅当 meta_link_type 为表（非视图）时才可删除
+            if not _check_table_exists(session, "meta_link_type"):
+                logger.warning(
+                    "meta_link_type is a view and cannot be deleted. "
+                    "Link type lives in V3; use V3 delete (LinkTypeDef and related tables)."
+                )
+                # 尝试使用 V3 逻辑删除 (LinkTypeDef)
+                # 注意：这里假设如果 meta_link_type 是视图，则必然存在 meta_link_type_def
+                from app.models.ontology import LinkTypeDef, LinkTypeVer
+                
+                link_def = session.get(LinkTypeDef, obj_id)
+                if not link_def:
+                    logger.warning(f"LinkTypeDef not found: {obj_id}")
+                    return False
+                
+                # 1. 删除所有版本
+                versions = session.exec(select(LinkTypeVer).where(LinkTypeVer.def_id == obj_id)).all()
+                for ver in versions:
+                    session.delete(ver)
+                session.flush()  # Ensure versions are deleted before definition
+                
+                # 2. 删除定义
+                session.delete(link_def)
+                
+                session.commit()
+                logger.info(f"LinkType (V3) deleted successfully: {obj_id}")
+                return True
+
+            db_obj = session.get(LinkType, obj_id)
+            if not db_obj:
+                logger.warning(f"LinkType not found: {obj_id}")
+                return False
+            
+            session.delete(db_obj)
+            session.commit()
+            logger.info(f"LinkType deleted successfully: {obj_id}")
+            return True
+            
     except Exception as e:
         session.rollback()
         logger.error(f"Failed to delete LinkType {obj_id}: {str(e)}")
@@ -334,9 +1016,103 @@ def get_action_definition_by_name(session: Session, api_name: str) -> Optional[A
 
 def list_action_definitions(session: Session, skip: int = 0, limit: int = 100) -> List[ActionDefinition]:
     """List all ActionDefinitions with pagination."""
-    statement = select(ActionDefinition).offset(skip).limit(limit)
-    results = session.exec(statement)
-    return list(results.all())
+    from sqlalchemy import text
+    from sqlalchemy.exc import ProgrammingError
+    
+    try:
+        statement = select(ActionDefinition).offset(skip).limit(limit)
+        results = session.exec(statement)
+        return list(results.all())
+    except ProgrammingError as e:
+        # 表不存在，尝试创建
+        if "1146" in str(e):
+            logger.warning("Table meta_action_def does not exist, creating...")
+            
+            # 检查 meta_function_def 表是否存在
+            check_func_sql = text("""
+                SELECT COUNT(*) FROM information_schema.tables 
+                WHERE table_schema = DATABASE() AND table_name = 'meta_function_def'
+            """)
+            func_exists = session.execute(check_func_sql).scalar()
+            
+            if not func_exists:
+                # 先创建 meta_function_def 表
+                create_func_sql = text("""
+                    CREATE TABLE IF NOT EXISTS `meta_function_def` (
+                      `id` varchar(36) NOT NULL,
+                      `api_name` varchar(100) NOT NULL,
+                      `display_name` varchar(200) NOT NULL,
+                      `code_content` longtext COMMENT 'Python Code Content',
+                      `bound_object_type_id` varchar(36) DEFAULT NULL,
+                      `description` varchar(500),
+                      `input_params_schema` json,
+                      `output_type` varchar(50) DEFAULT 'VOID',
+                      PRIMARY KEY (`id`),
+                      UNIQUE KEY `ix_meta_function_def_api_name` (`api_name`)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+                """)
+                session.execute(create_func_sql)
+                session.commit()
+                logger.info("Table meta_function_def created successfully")
+            
+            # 创建 meta_action_def 表
+            create_action_sql = text("""
+                CREATE TABLE IF NOT EXISTS `meta_action_def` (
+                  `id` varchar(36) NOT NULL,
+                  `api_name` varchar(100) NOT NULL,
+                  `display_name` varchar(200) NOT NULL,
+                  `backing_function_id` varchar(36) NOT NULL,
+                  PRIMARY KEY (`id`),
+                  UNIQUE KEY `ix_meta_action_def_api_name` (`api_name`),
+                  KEY `fk_action_backing_function` (`backing_function_id`),
+                  CONSTRAINT `fk_action_backing_function` FOREIGN KEY (`backing_function_id`) REFERENCES `meta_function_def` (`id`) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """)
+            session.execute(create_action_sql)
+            session.commit()
+            logger.info("Table meta_action_def created successfully")
+            
+            # 重试查询
+            statement = select(ActionDefinition).offset(skip).limit(limit)
+            results = session.exec(statement)
+            return list(results.all())
+        else:
+            raise
+
+
+def update_action_definition(
+    session: Session,
+    obj_id: str,
+    obj_in: ActionDefinitionUpdate
+) -> Optional[ActionDefinition]:
+    """Update an existing ActionDefinition."""
+    logger.info(f"Updating ActionDefinition: {obj_id}")
+    
+    try:
+        db_obj = session.get(ActionDefinition, obj_id)
+        if not db_obj:
+            logger.warning(f"ActionDefinition not found: {obj_id}")
+            return None
+        
+        # Update fields if provided
+        update_data = obj_in.model_dump(exclude_unset=True)
+        for key, value in update_data.items():
+            if value is not None:
+                setattr(db_obj, key, value)
+        
+        session.add(db_obj)
+        session.commit()
+        session.refresh(db_obj)
+        logger.info(f"ActionDefinition updated successfully: {obj_id}")
+        return db_obj
+    except IntegrityError as e:
+        session.rollback()
+        logger.error(f"Failed to update ActionDefinition {obj_id}: Integrity error - {str(e)}")
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Failed to update ActionDefinition {obj_id}: {str(e)}")
+        raise
 
 
 def delete_action_definition(session: Session, obj_id: str) -> bool:
@@ -364,20 +1140,45 @@ def delete_action_definition(session: Session, obj_id: str) -> bool:
 # ==========================================
 
 def create_shared_property(session: Session, obj_in: SharedPropertyCreate) -> SharedProperty:
-    """Create a new SharedProperty."""
+    """
+    Create a new SharedProperty.
+    
+    直接写入底层表 ont_shared_property_type（因为  是视图，只读）。
+    创建后从视图读取返回以保持兼容性。
+    """
     logger.info(f"Creating SharedProperty: {obj_in.api_name}")
     
+    from sqlalchemy import text
+    
+    # 直接写入底层表 ont_shared_property_type
+    new_id = str(uuid.uuid4())
+    insert_sql = text("""
+        INSERT INTO ont_shared_property_type (id, api_name, display_name, data_type, formatter, description, created_at)
+        VALUES (:id, :api_name, :display_name, :data_type, :formatter, :description, :created_at)
+    """)
+    
     try:
-        obj_data = obj_in.model_dump()
         # Set created_at to current time if not provided
-        if 'created_at' not in obj_data or obj_data['created_at'] is None:
-            obj_data['created_at'] = datetime.now()
-        db_obj = SharedProperty(**obj_data)
-        session.add(db_obj)
+        created_at = datetime.now()
+        
+        session.execute(insert_sql, {
+            'id': new_id,
+            'api_name': obj_in.api_name,
+            'display_name': obj_in.display_name,
+            'data_type': obj_in.data_type,
+            'formatter': obj_in.formatter,
+            'description': obj_in.description,
+            'created_at': created_at
+        })
         session.commit()
-        session.refresh(db_obj)
-        logger.info(f"SharedProperty created successfully: {obj_in.api_name} (ID: {db_obj.id})")
-        return db_obj
+        
+        # 从视图读取返回（保持兼容）
+        db_obj = get_shared_property(session, new_id)
+        if db_obj:
+            logger.info(f"SharedProperty created successfully: {obj_in.api_name} (ID: {new_id})")
+            return db_obj
+        else:
+            raise ValueError(f"Failed to retrieve created SharedProperty: {new_id}")
     except IntegrityError as e:
         session.rollback()
         logger.error(f"Failed to create SharedProperty {obj_in.api_name}: Integrity error - {str(e)}")
@@ -390,29 +1191,97 @@ def create_shared_property(session: Session, obj_in: SharedPropertyCreate) -> Sh
 
 def get_shared_property(session: Session, obj_id: str) -> Optional[SharedProperty]:
     """Get SharedProperty by ID."""
-    return session.get(SharedProperty, obj_id)
+    from sqlalchemy import text
+    
+    # 使用原始 SQL 查询，显式指定列名（不包含 project_id）
+    query = text("""
+        SELECT id, api_name, display_name, data_type, formatter, description, created_at
+        FROM meta_shared_property
+        WHERE id = :id
+    """)
+    
+    result = session.execute(query, {'id': obj_id})
+    row = result.fetchone()
+    
+    if row:
+        return SharedProperty(
+            id=row[0],
+            api_name=row[1],
+            display_name=row[2],
+            data_type=row[3],
+            formatter=row[4],
+            description=row[5],
+            created_at=row[6]
+        )
+    return None
 
 
-def get_shared_property_by_name(session: Session, api_name: str, project_id: Optional[str] = None) -> Optional[SharedProperty]:
-    """Get SharedProperty by api_name, optionally filtered by project_id."""
-    statement = select(SharedProperty).where(SharedProperty.api_name == api_name)
-    if project_id:
-        statement = statement.where(SharedProperty.project_id == project_id)
-    return session.exec(statement).first()
+def get_shared_property_by_name(session: Session, api_name: str) -> Optional[SharedProperty]:
+    """Get SharedProperty by api_name."""
+    from sqlalchemy import text
+    
+    # 使用原始 SQL 查询，显式指定列名（不包含 project_id）
+    query = text("""
+        SELECT id, api_name, display_name, data_type, formatter, description, created_at
+        FROM meta_shared_property
+        WHERE api_name = :api_name
+        LIMIT 1
+    """)
+    
+    result = session.execute(query, {'api_name': api_name})
+    row = result.fetchone()
+    
+    if row:
+        return SharedProperty(
+            id=row[0],
+            api_name=row[1],
+            display_name=row[2],
+            data_type=row[3],
+            formatter=row[4],
+            description=row[5],
+            created_at=row[6]
+        )
+    return None
 
 
 def list_shared_properties(
     session: Session,
-    project_id: Optional[str] = None,
     skip: int = 0,
     limit: int = 100
 ) -> List[SharedProperty]:
-    """List SharedProperties, optionally filtered by project_id."""
-    statement = select(SharedProperty)
-    if project_id:
-        statement = statement.where(SharedProperty.project_id == project_id)
-    statement = statement.offset(skip).limit(limit)
-    return list(session.exec(statement).all())
+    """
+    List SharedProperties.
+    
+    查询 meta_shared_property 视图（映射自 ont_shared_property_type 表）。
+    使用原始 SQL 查询以避免 SQLModel 的元数据缓存问题。
+    """
+    from sqlalchemy import text
+    
+    # 使用原始 SQL 查询，显式指定列名（不包含 project_id）
+    query = text("""
+        SELECT id, api_name, display_name, data_type, formatter, description, created_at
+        FROM meta_shared_property
+        LIMIT :limit OFFSET :offset
+    """)
+    
+    result = session.execute(query, {'limit': limit, 'offset': skip})
+    rows = result.fetchall()
+    
+    # 手动构建 SharedProperty 对象
+    properties = []
+    for row in rows:
+        prop = SharedProperty(
+            id=row[0],
+            api_name=row[1],
+            display_name=row[2],
+            data_type=row[3],
+            formatter=row[4],
+            description=row[5],
+            created_at=row[6]
+        )
+        properties.append(prop)
+    
+    return properties
 
 
 def update_shared_property(
@@ -420,25 +1289,78 @@ def update_shared_property(
     obj_id: str,
     obj_in: SharedPropertyUpdate
 ) -> Optional[SharedProperty]:
-    """Update an existing SharedProperty."""
+    """
+    Update an existing SharedProperty.
+    
+    直接更新底层表 ont_shared_property_type（因为 meta_shared_property 是视图，只读）。
+    更新后从视图读取返回以保持兼容性。
+    """
     logger.info(f"Updating SharedProperty: {obj_id}")
     
+    from sqlalchemy import text
+    
+    # 先检查记录是否存在（通过视图）
+    db_obj = get_shared_property(session, obj_id)
+    if not db_obj:
+        logger.warning(f"SharedProperty not found: {obj_id}")
+        return None
+    
+    # 准备更新数据（只更新允许的字段）
+    update_data = obj_in.model_dump(exclude_unset=True)
+    if not update_data:
+        logger.info(f"No fields to update for SharedProperty: {obj_id}")
+        return db_obj
+    
+    # 构建 UPDATE SQL（只更新底层表存在的字段）
+    # ont_shared_property_type 表有：id, api_name, display_name, data_type, formatter, description, created_at
+    # SharedPropertyUpdate DTO 可能有：display_name, data_type, formatter, description
+    update_fields = []
+    update_params = {'id': obj_id}
+    
+    if 'display_name' in update_data and update_data['display_name'] is not None:
+        update_fields.append("display_name = :display_name")
+        update_params['display_name'] = update_data['display_name']
+    
+    if 'data_type' in update_data and update_data['data_type'] is not None:
+        update_fields.append("data_type = :data_type")
+        update_params['data_type'] = update_data['data_type']
+    
+    if 'formatter' in update_data:
+        # formatter 可以是 None，所以不检查 is not None
+        update_fields.append("formatter = :formatter")
+        update_params['formatter'] = update_data['formatter']
+    
+    if 'description' in update_data:
+        # description 可以是 None，所以不检查 is not None
+        update_fields.append("description = :description")
+        update_params['description'] = update_data['description']
+    
+    if not update_fields:
+        logger.info(f"No valid fields to update for SharedProperty: {obj_id}")
+        return db_obj
+    
+    # 执行更新
+    update_sql = text(f"""
+        UPDATE ont_shared_property_type 
+        SET {', '.join(update_fields)}
+        WHERE id = :id
+    """)
+    
     try:
-        db_obj = session.get(SharedProperty, obj_id)
-        if not db_obj:
-            logger.warning(f"SharedProperty not found: {obj_id}")
+        result = session.execute(update_sql, update_params)
+        session.commit()
+        
+        if result.rowcount == 0:
+            logger.warning(f"SharedProperty update affected 0 rows: {obj_id}")
             return None
         
-        # Update fields
-        update_data = obj_in.model_dump(exclude_unset=True)
-        for field, value in update_data.items():
-            setattr(db_obj, field, value)
-        
-        session.add(db_obj)
-        session.commit()
-        session.refresh(db_obj)
-        logger.info(f"SharedProperty updated successfully: {obj_id}")
-        return db_obj
+        # 从视图读取返回（保持兼容）
+        updated_obj = get_shared_property(session, obj_id)
+        if updated_obj:
+            logger.info(f"SharedProperty updated successfully: {obj_id}")
+            return updated_obj
+        else:
+            raise ValueError(f"Failed to retrieve updated SharedProperty: {obj_id}")
     except IntegrityError as e:
         session.rollback()
         logger.error(f"Failed to update SharedProperty {obj_id}: Integrity error - {str(e)}")
@@ -450,17 +1372,35 @@ def update_shared_property(
 
 
 def delete_shared_property(session: Session, obj_id: str) -> bool:
-    """Delete SharedProperty by ID."""
+    """
+    Delete SharedProperty by ID.
+    
+    直接从底层表 ont_shared_property_type 删除（因为 meta_shared_property 是视图，只读）。
+    """
     logger.info(f"Deleting SharedProperty: {obj_id}")
     
+    from sqlalchemy import text
+    
+    # 先检查记录是否存在（通过视图）
+    db_obj = get_shared_property(session, obj_id)
+    if not db_obj:
+        logger.warning(f"SharedProperty not found: {obj_id}")
+        return False
+    
+    # 直接从底层表删除
+    delete_sql = text("""
+        DELETE FROM ont_shared_property_type 
+        WHERE id = :id
+    """)
+    
     try:
-        db_obj = session.get(SharedProperty, obj_id)
-        if not db_obj:
-            logger.warning(f"SharedProperty not found: {obj_id}")
+        result = session.execute(delete_sql, {'id': obj_id})
+        session.commit()
+        
+        if result.rowcount == 0:
+            logger.warning(f"SharedProperty delete affected 0 rows: {obj_id}")
             return False
         
-        session.delete(db_obj)
-        session.commit()
         logger.info(f"SharedProperty deleted successfully: {obj_id}")
         return True
     except Exception as e:
@@ -473,11 +1413,113 @@ def delete_shared_property(session: Session, obj_id: str) -> bool:
 # Project CRUD
 # ==========================================
 
+def _is_project_table(session: Session) -> bool:
+    """检查 meta_project 是表还是视图。返回 True 表示是表（可写入）。"""
+    return _check_table_exists(session, "meta_project")
+
+
+def create_project(session: Session, obj_in: ProjectCreate) -> Project:
+    """Create a new Project."""
+    logger.info(f"Creating Project: {obj_in.name}")
+    
+    try:
+        if not _is_project_table(session):
+            raise ValueError("meta_project 是视图，不支持创建项目。请先运行 enable_multi_project.sql 脚本。")
+        
+        obj_data = obj_in.model_dump()
+        now = datetime.now()
+        if 'created_at' not in obj_data or obj_data.get('created_at') is None:
+            obj_data['created_at'] = now
+        
+        db_obj = Project(**obj_data)
+        session.add(db_obj)
+        session.commit()
+        session.refresh(db_obj)
+        logger.info(f"Project created successfully: {obj_in.name} (ID: {db_obj.id})")
+        return db_obj
+    except IntegrityError as e:
+        session.rollback()
+        logger.error(f"Failed to create Project {obj_in.name}: Integrity error - {str(e)}")
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Failed to create Project {obj_in.name}: {str(e)}")
+        raise
+
+
+def get_project(session: Session, obj_id: str) -> Optional[Project]:
+    """Get Project by ID."""
+    try:
+        return session.get(Project, obj_id)
+    except Exception as e:
+        logger.warning(f"Failed to get Project {obj_id}: {str(e)}")
+        return None
+
+
 def list_projects(session: Session, skip: int = 0, limit: int = 100) -> List[Project]:
     """List all Projects with pagination."""
     statement = select(Project).offset(skip).limit(limit)
     results = session.exec(statement)
     return list(results.all())
+
+
+def update_project(
+    session: Session,
+    obj_id: str,
+    obj_in: "ProjectCreate"
+) -> Optional[Project]:
+    """Update an existing Project."""
+    logger.info(f"Updating Project: {obj_id}")
+    
+    try:
+        if not _is_project_table(session):
+            raise ValueError("meta_project 是视图，不支持更新项目。请先运行 enable_multi_project.sql 脚本。")
+        
+        db_obj = session.get(Project, obj_id)
+        if not db_obj:
+            logger.warning(f"Project not found: {obj_id}")
+            return None
+        
+        update_data = obj_in.model_dump(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(db_obj, field, value)
+        
+        session.add(db_obj)
+        session.commit()
+        session.refresh(db_obj)
+        logger.info(f"Project updated successfully: {obj_id}")
+        return db_obj
+    except IntegrityError as e:
+        session.rollback()
+        logger.error(f"Failed to update Project {obj_id}: Integrity error - {str(e)}")
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Failed to update Project {obj_id}: {str(e)}")
+        raise
+
+
+def delete_project(session: Session, obj_id: str) -> bool:
+    """Delete Project by ID."""
+    logger.info(f"Deleting Project: {obj_id}")
+    
+    try:
+        if not _is_project_table(session):
+            raise ValueError("meta_project 是视图，不支持删除项目。请先运行 enable_multi_project.sql 脚本。")
+        
+        db_obj = session.get(Project, obj_id)
+        if not db_obj:
+            logger.warning(f"Project not found: {obj_id}")
+            return False
+        
+        session.delete(db_obj)
+        session.commit()
+        logger.info(f"Project deleted successfully: {obj_id}")
+        return True
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Failed to delete Project {obj_id}: {str(e)}")
+        raise
 
 
 def list_projects_with_stats(session: Session, skip: int = 0, limit: int = 100) -> List[Dict]:
@@ -520,12 +1562,86 @@ def list_projects_with_stats(session: Session, skip: int = 0, limit: int = 100) 
         
         result.append({
             "id": project.id,
-            "title": project.name,
+            "name": project.name,
             "description": project.description,
             "tags": [],  # Default empty, can be extended later
-            "objectCount": object_count,
-            "linkCount": link_count,
-            "updatedAt": project.created_at,  # Use created_at as updatedAt for now
+            "object_count": object_count,
+            "link_count": link_count,
+            "created_at": project.created_at,
+            "updated_at": project.updated_at,
         })
     
     return result
+
+
+# ==========================================
+# Actions & Logic Page - Extended Queries
+# ==========================================
+
+def list_actions_with_functions(
+    session: Session,
+    skip: int = 0,
+    limit: int = 100
+) -> List[ActionDefWithFunction]:
+    """
+    List all actions with resolved function details.
+    
+    SQL Logic:
+    SELECT a.id, a.api_name, a.display_name, a.backing_function_id,
+           f.api_name as function_api_name, f.display_name as function_display_name
+    FROM meta_action_def a
+    LEFT JOIN meta_function_def f ON a.backing_function_id = f.id
+    """
+    results: List[ActionDefWithFunction] = []
+    
+    # Get all actions
+    actions = list_action_definitions(session, skip=skip, limit=limit)
+    
+    for action in actions:
+        # Resolve function details
+        function_api_name = None
+        function_display_name = None
+        
+        if action.backing_function_id:
+            func = get_function_definition(session, action.backing_function_id)
+            if func:
+                function_api_name = func.api_name
+                function_display_name = func.display_name
+        
+        results.append(ActionDefWithFunction(
+            id=action.id,
+            api_name=action.api_name,
+            display_name=action.display_name,
+            backing_function_id=action.backing_function_id,
+            function_api_name=function_api_name,
+            function_display_name=function_display_name,
+        ))
+    
+    return results
+
+
+def list_functions_for_list(
+    session: Session,
+    skip: int = 0,
+    limit: int = 100
+) -> List[FunctionDefForList]:
+    """
+    List all functions for display in Actions & Logic page.
+    
+    SQL Logic:
+    SELECT id, api_name, display_name, description, output_type, code_content
+    FROM meta_function_def
+    """
+    functions = list_function_definitions(session, skip=skip, limit=limit)
+    
+    return [
+        FunctionDefForList(
+            id=func.id,
+            api_name=func.api_name,
+            display_name=func.display_name,
+            description=func.description,
+            output_type=func.output_type,
+            code_content=func.code_content,
+        )
+        for func in functions
+    ]

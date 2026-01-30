@@ -1,6 +1,9 @@
 /**
  * Action Definition Editor component.
  * Vertical tabs layout for editing existing action definitions.
+ * 
+ * @todo V3 Migration: This component still uses V1 API.
+ * Migrate to V3 when backend Action endpoints are implemented.
  */
 import React, { useState, useEffect } from 'react';
 import {
@@ -182,7 +185,7 @@ const ActionEditor: React.FC<ActionEditorProps> = ({ visible, action, onCancel, 
         }
       } catch (error) {
         console.error('Failed to fetch object types:', error);
-        setObjectTypes(MOCK_OBJECT_TYPES);
+        setObjectTypes([]);
       }
     };
     if (visible) {
@@ -719,22 +722,6 @@ const ActionEditor: React.FC<ActionEditorProps> = ({ visible, action, onCancel, 
     </Modal>
   );
 };
-
-// Mock Object Types
-const MOCK_OBJECT_TYPES: ObjectTypeData[] = [
-  {
-    id: '10000000-0000-0000-0000-000000000001',
-    api_name: 'fighter',
-    display_name: 'Fighter',
-    property_schema: { id: 'string', callsign: 'string', fuel: 'number', status: 'string' },
-  },
-  {
-    id: '10000000-0000-0000-0000-000000000002',
-    api_name: 'target',
-    display_name: 'Target',
-    property_schema: { id: 'string', name: 'string', threat_level: 'string', status: 'string' },
-  },
-];
 
 export default ActionEditor;
 

@@ -52,7 +52,9 @@ def create_object_type(
             display_name=request.display_name,
             description=request.description,
             project_id=request.project_id,
-            property_schema=property_schema_dict if property_schema_dict else None
+            property_schema=property_schema_dict if property_schema_dict else None,
+            source_connection_id=request.source_connection_id,
+            source_table_name=request.source_table_name,
         )
         
         return meta_crud.create_object_type(session, obj_in)

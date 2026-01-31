@@ -639,6 +639,8 @@ def create_link_type_ver(
             source_object_def_id=data.source_object_def_id,
             target_object_def_id=data.target_object_def_id,
             cardinality=data.cardinality,
+            source_key_column=data.source_key_column,
+            target_key_column=data.target_key_column,
             status=data.status,
             created_at=datetime.utcnow(),
         )
@@ -692,6 +694,8 @@ def get_link_type_full(session: Session, def_id: str) -> Optional[LinkTypeFullRe
             result.source_object_def_id = ver.source_object_def_id
             result.target_object_def_id = ver.target_object_def_id
             result.cardinality = ver.cardinality
+            result.source_key_column = ver.source_key_column
+            result.target_key_column = ver.target_key_column
             result.status = ver.status
             
             # Get source/target type names

@@ -129,6 +129,8 @@ class LinkTypeVer(SQLModel, table=True):
     source_object_def_id: str = Field(foreign_key="meta_object_type_def.id", max_length=36)
     target_object_def_id: str = Field(foreign_key="meta_object_type_def.id", max_length=36)
     cardinality: str = Field(max_length=50)  # ONE_TO_ONE, ONE_TO_MANY, MANY_TO_ONE, MANY_TO_MANY
+    source_key_column: Optional[str] = Field(default=None, max_length=100)  # Source table key column (usually PK)
+    target_key_column: Optional[str] = Field(default=None, max_length=100)  # Target table key column (FK for 1:N)
     status: str = Field(default="DRAFT", max_length=50)
     created_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
 
@@ -352,12 +354,16 @@ class LinkTypeVerCreate(SQLModel):
     source_object_def_id: str = Field(max_length=36)
     target_object_def_id: str = Field(max_length=36)
     cardinality: str = Field(max_length=50)
+    source_key_column: Optional[str] = Field(default=None, max_length=100)
+    target_key_column: Optional[str] = Field(default=None, max_length=100)
     status: str = Field(default="DRAFT", max_length=50)
 
 
 class LinkTypeVerUpdate(SQLModel):
     """DTO for updating LinkTypeVer."""
     display_name: Optional[str] = Field(default=None, max_length=100)
+    source_key_column: Optional[str] = Field(default=None, max_length=100)
+    target_key_column: Optional[str] = Field(default=None, max_length=100)
     status: Optional[str] = Field(default=None, max_length=50)
 
 
@@ -370,6 +376,8 @@ class LinkTypeVerRead(SQLModel):
     source_object_def_id: str
     target_object_def_id: str
     cardinality: str
+    source_key_column: Optional[str] = None
+    target_key_column: Optional[str] = None
     status: str
     created_at: Optional[datetime]
 
@@ -386,6 +394,8 @@ class LinkTypeFullRead(SQLModel):
     source_object_def_id: Optional[str] = None
     target_object_def_id: Optional[str] = None
     cardinality: Optional[str] = None
+    source_key_column: Optional[str] = None
+    target_key_column: Optional[str] = None
     status: Optional[str] = None
     # Joined object type names
     source_type_name: Optional[str] = None

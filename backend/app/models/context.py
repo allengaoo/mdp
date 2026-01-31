@@ -98,7 +98,7 @@ class LinkMappingDef(SQLModel, table=True):
     
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
     link_def_id: str = Field(max_length=36, index=True)  # Target ontology link type
-    source_connection_id: str = Field(max_length=36)  # Source connection
+    source_connection_id: Optional[str] = Field(default=None, max_length=36)  # Source connection (auto-resolved)
     join_table_name: str = Field(max_length=100)  # Join table in mdp_raw_store
     source_key_column: str = Field(max_length=100)  # Column mapping to source object PK
     target_key_column: str = Field(max_length=100)  # Column mapping to target object PK
@@ -152,7 +152,7 @@ class ObjectMappingDefWithDetails(ObjectMappingDefRead):
 class LinkMappingDefCreate(SQLModel):
     """DTO for creating LinkMappingDef."""
     link_def_id: str = Field(max_length=36)
-    source_connection_id: str = Field(max_length=36)
+    source_connection_id: Optional[str] = Field(default=None, max_length=36)  # Optional: auto-resolved from join_table_name
     join_table_name: str = Field(max_length=100)
     source_key_column: str = Field(max_length=100)
     target_key_column: str = Field(max_length=100)
@@ -172,7 +172,7 @@ class LinkMappingDefRead(SQLModel):
     """DTO for reading LinkMappingDef."""
     id: str
     link_def_id: str
-    source_connection_id: str
+    source_connection_id: Optional[str] = None
     join_table_name: str
     source_key_column: str
     target_key_column: str

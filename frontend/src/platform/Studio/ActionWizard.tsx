@@ -12,7 +12,6 @@ import {
   Form,
   Input,
   Button,
-  Radio,
   Select,
   Table,
   Space,
@@ -24,17 +23,21 @@ import {
   Col,
 } from 'antd';
 import {
-  PlusSquareOutlined,
   EditOutlined,
-  DeleteOutlined,
   LinkOutlined,
   DisconnectOutlined,
   CodeOutlined,
   PlusOutlined,
   MinusCircleOutlined,
 } from '@ant-design/icons';
-import apiClient from '../../api/axios';
 import { useParams } from 'react-router-dom';
+import { 
+  fetchProjectObjectTypes, 
+  fetchObjectTypeProperties,
+  fetchObjectTypes as fetchAllObjectTypes
+} from '../../api/v3/ontology';
+import { IV3ObjectTypeFull } from '../../api/v3/types';
+import { createActionDefinition, IActionDefinitionCreate } from '../../api/v3/logic';
 
 const { TextArea } = Input;
 const { Step } = Steps;
@@ -59,21 +62,22 @@ interface PropertyMapping {
 }
 
 interface ValidationRule {
+  target_field: string; // Parameter api_id for param_validation, property key for pre/post condition
   expression: string;
   error_message: string;
 }
 
-interface ObjectTypeData {
-  id: string;
-  display_name: string;
-  api_name: string;
-  property_schema?: Record<string, any>;
+interface ObjectProperty {
+  key: string;
+  label: string;
+  type: string;
 }
 
+// Use V3 object type interface
+type ObjectTypeData = IV3ObjectTypeFull;
+
 const OPERATION_TYPES = [
-  { value: 'create_object', label: 'Create Object', icon: PlusSquareOutlined, color: '#52c41a' },
   { value: 'update_property', label: 'Update Property', icon: EditOutlined, color: '#1890ff' },
-  { value: 'delete_object', label: 'Delete Object', icon: DeleteOutlined, color: '#ff4d4f' },
   { value: 'link_objects', label: 'Link Objects', icon: LinkOutlined, color: '#722ed1' },
   { value: 'unlink_objects', label: 'Unlink Objects', icon: DisconnectOutlined, color: '#fa8c16' },
   { value: 'function_logic', label: 'Function Logic', icon: CodeOutlined, color: '#13c2c2' },
@@ -83,10 +87,12 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
   const { projectId } = useParams<{ projectId: string }>();
   const [form] = Form.useForm();
   const [currentStep, setCurrentStep] = useState(0);
-  const [targetScope, setTargetScope] = useState<'generic' | 'specific'>('generic');
+  // Target scope is always 'specific' - only specific object actions are supported
+  const [targetScope] = useState<'specific'>('specific');
   const [selectedOperationType, setSelectedOperationType] = useState<string>('');
   const [objectTypes, setObjectTypes] = useState<ObjectTypeData[]>([]);
   const [selectedObjectType, setSelectedObjectType] = useState<ObjectTypeData | null>(null);
+  const [objectProperties, setObjectProperties] = useState<ObjectProperty[]>([]);
   const [parameters, setParameters] = useState<Parameter[]>([]);
   const [propertyMappings, setPropertyMappings] = useState<PropertyMapping[]>([]);
   const [validationRules, setValidationRules] = useState<{
@@ -99,43 +105,50 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
     post_condition: [],
   });
 
-  // Fetch object types
+  // Fetch object types - use V3 API
+  // In Ontology Studio: only show project-bound object types
+  // In Actions & Logic menu: show all object types (to be implemented separately)
   useEffect(() => {
-    const fetchObjectTypes = async () => {
+    const loadObjectTypes = async () => {
       try {
-        const response = await apiClient.get('/meta/object-types', {
-          params: { limit: 100 },
-        });
-        const filtered = projectId
-          ? response.data.filter((ot: ObjectTypeData) => ot.project_id === projectId)
-          : response.data;
-        setObjectTypes(filtered);
+        if (projectId) {
+          // Ontology Studio context: fetch project-bound object types only
+          const data = await fetchProjectObjectTypes(projectId);
+          setObjectTypes(data);
+        } else {
+          // Global context (Actions & Logic): fetch all object types
+          const data = await fetchAllObjectTypes();
+          setObjectTypes(data);
+        }
       } catch (error) {
         console.error('Failed to fetch object types:', error);
         setObjectTypes([]);
       }
     };
     if (visible) {
-      fetchObjectTypes();
+      loadObjectTypes();
     }
   }, [visible, projectId]);
 
-  // Update selected object type when target scope changes
-  useEffect(() => {
-    if (targetScope === 'generic') {
-      setSelectedObjectType(null);
-      form.setFieldsValue({ target_object_type_id: undefined });
+  // Fetch object properties when object type is selected - use V3 API
+  const loadObjectProperties = async (objectTypeId: string) => {
+    try {
+      const data = await fetchObjectTypeProperties(objectTypeId);
+      const props: ObjectProperty[] = data.map((prop: any) => ({
+        key: prop.api_name || prop.local_api_name || prop.property_def_id,
+        label: prop.display_name || prop.api_name || prop.local_api_name || prop.property_def_id,
+        type: prop.data_type || 'string',
+      }));
+      setObjectProperties(props);
+    } catch (error) {
+      console.error('Failed to fetch object properties:', error);
+      setObjectProperties([]);
     }
-  }, [targetScope, form]);
+  };
 
-  // Get selected object type properties
-  const getObjectProperties = (): Array<{ key: string; label: string; type: string }> => {
-    if (!selectedObjectType?.property_schema) return [];
-    return Object.entries(selectedObjectType.property_schema).map(([key, value]) => ({
-      key,
-      label: key,
-      type: typeof value === 'string' ? value : (value as any).type || 'string',
-    }));
+  // Get object properties for rendering (use state instead of computing from property_schema)
+  const getObjectProperties = (): ObjectProperty[] => {
+    return objectProperties;
   };
 
   // Handle next step
@@ -174,38 +187,46 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
     setCurrentStep(currentStep - 1);
   };
 
-  // Handle finish
+  // Handle finish - create action definition using V3 API
   const handleFinish = async () => {
     try {
       const values = form.getFieldsValue();
       
-      // Construct payload
-      const payload: any = {
+      // Construct payload for V3 API
+      const payload: IActionDefinitionCreate = {
         display_name: values.display_name,
         api_name: values.api_name,
-        description: values.description || '',
-        operation_type: selectedOperationType,
-        target_object_type_id: targetScope === 'specific' ? values.target_object_type_id : null,
-        parameters_schema: parameters,
-        property_mapping: propertyMappings.length > 0 ? propertyMappings.reduce((acc, m) => {
-          acc[m.param_key] = m.property_key;
-          return acc;
-        }, {} as Record<string, string>) : null,
-        validation_rules: {
-          param_validation: validationRules.param_validation,
-          pre_condition: validationRules.pre_condition,
-          post_condition: validationRules.post_condition,
-        },
-        // For now, we'll need a backing_function_id - this should be created separately
-        backing_function_id: 'temp-function-id', // TODO: Create function or select existing
+        description: values.description || undefined,
+        operation_type: selectedOperationType || undefined,
+        target_object_type_id: values.target_object_type_id || undefined,
+        parameters_schema: parameters.length > 0 ? parameters : undefined,
+        property_mapping: propertyMappings.length > 0 
+          ? propertyMappings.reduce((acc, m) => {
+              acc[m.param_key] = m.property_key;
+              return acc;
+            }, {} as Record<string, string>) 
+          : undefined,
+        validation_rules: (validationRules.param_validation.length > 0 || 
+                          validationRules.pre_condition.length > 0 || 
+                          validationRules.post_condition.length > 0)
+          ? {
+              param_validation: validationRules.param_validation,
+              pre_condition: validationRules.pre_condition,
+              post_condition: validationRules.post_condition,
+            }
+          : undefined,
+        // project_id is optional - will be set if in project context
+        project_id: projectId || undefined,
       };
 
-      await apiClient.post('/meta/action-definitions', payload);
+      await createActionDefinition(payload);
       message.success('Action definition created successfully');
-      handleReset();
-      onSuccess();
+      onSuccess();  // Close modal first
+      handleReset(); // Then reset form for next use
     } catch (error: any) {
-      message.error(error.response?.data?.detail || 'Failed to create action definition');
+      const errorMsg = error.response?.data?.detail || 'Failed to create action definition';
+      message.error(errorMsg);
+      console.error('Create action definition failed:', error);
     }
   };
 
@@ -213,9 +234,9 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
   const handleReset = () => {
     form.resetFields();
     setCurrentStep(0);
-    setTargetScope('generic');
     setSelectedOperationType('');
     setSelectedObjectType(null);
+    setObjectProperties([]);
     setParameters([]);
     setPropertyMappings([]);
     setValidationRules({
@@ -272,7 +293,7 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
   const addValidationRule = (type: 'param_validation' | 'pre_condition' | 'post_condition') => {
     setValidationRules({
       ...validationRules,
-      [type]: [...validationRules[type], { expression: '', error_message: '' }],
+      [type]: [...validationRules[type], { target_field: '', expression: '', error_message: '' }],
     });
   };
 
@@ -311,8 +332,7 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
 
   // Check if property mapping should be shown
   const showPropertyMapping =
-    selectedObjectType &&
-    (selectedOperationType === 'create_object' || selectedOperationType === 'update_property');
+    selectedObjectType && selectedOperationType === 'update_property';
 
   const paramColumns = [
     {
@@ -454,10 +474,9 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
         <Step title="Validations" />
       </Steps>
 
-      <Form form={form} layout="vertical">
-        {/* Step 1: Basic Info */}
-        {currentStep === 0 && (
-          <div>
+      <Form form={form} layout="vertical" preserve={true}>
+        {/* Step 1: Basic Info - use CSS hiding to preserve form values */}
+        <div style={{ display: currentStep === 0 ? 'block' : 'none' }}>
             <Form.Item
               label="Display Name"
               name="display_name"
@@ -478,37 +497,36 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
               <TextArea rows={3} placeholder="Action description" />
             </Form.Item>
 
-            <Form.Item label="Target Scope">
-              <Radio.Group
-                value={targetScope}
-                onChange={(e) => setTargetScope(e.target.value)}
+            {/* Target Object Type - only specific object actions are supported */}
+            <Form.Item
+              label="Target Object Type"
+              name="target_object_type_id"
+              rules={[{ required: true, message: 'Please select target object type' }]}
+            >
+              <Select 
+                placeholder="Select Object Type"
+                onChange={(value) => {
+                  const objType = objectTypes.find((ot) => ot.id === value);
+                  setSelectedObjectType(objType || null);
+                  // Fetch object properties from V3 API
+                  if (value) {
+                    loadObjectProperties(value);
+                  } else {
+                    setObjectProperties([]);
+                  }
+                }}
               >
-                <Radio value="generic">Generic (通用)</Radio>
-                <Radio value="specific">Specific Object</Radio>
-              </Radio.Group>
+                {objectTypes.map((ot) => (
+                  <Select.Option key={ot.id} value={ot.id}>
+                    {ot.display_name || ot.api_name}
+                  </Select.Option>
+                ))}
+              </Select>
             </Form.Item>
+        </div>
 
-            {targetScope === 'specific' && (
-              <Form.Item
-                label="Target Object Type"
-                name="target_object_type_id"
-                rules={[{ required: true, message: 'Please select target object type' }]}
-              >
-                <Select placeholder="Select Object Type">
-                  {objectTypes.map((ot) => (
-                    <Select.Option key={ot.id} value={ot.id}>
-                      {ot.display_name}
-                    </Select.Option>
-                  ))}
-                </Select>
-              </Form.Item>
-            )}
-          </div>
-        )}
-
-        {/* Step 2: Operation Type */}
-        {currentStep === 1 && (
-          <div>
+        {/* Step 2: Operation Type - use CSS hiding */}
+        <div style={{ display: currentStep === 1 ? 'block' : 'none' }}>
             <div style={{ marginBottom: 16 }}>
               <TextArea
                 rows={2}
@@ -540,12 +558,10 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
                 );
               })}
             </Row>
-          </div>
-        )}
+        </div>
 
-        {/* Step 3: Parameters & Mapping */}
-        {currentStep === 2 && (
-          <div>
+        {/* Step 3: Parameters & Mapping - use CSS hiding */}
+        <div style={{ display: currentStep === 2 ? 'block' : 'none' }}>
             <div style={{ marginBottom: 24 }}>
               <h4>Parameter Definitions</h4>
               <Table
@@ -587,20 +603,35 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
                 />
               </div>
             )}
-          </div>
-        )}
+        </div>
 
-        {/* Step 4: Validations */}
-        {currentStep === 3 && (
-          <div>
+        {/* Step 4: Validations - use CSS hiding */}
+        <div style={{ display: currentStep === 3 ? 'block' : 'none' }}>
             <Tabs defaultActiveKey="param_validation">
               <TabPane tab="Param Validation" key="param_validation">
+                <p style={{ color: '#8c8c8c', marginBottom: 16 }}>
+                  Define validation rules for action parameters.
+                </p>
                 <div>
                   {validationRules.param_validation.map((rule, index) => (
                     <Card key={index} style={{ marginBottom: 16 }}>
                       <Space direction="vertical" style={{ width: '100%' }}>
+                        <Select
+                          placeholder="Select Parameter"
+                          value={rule.target_field || undefined}
+                          onChange={(value) =>
+                            updateValidationRule('param_validation', index, 'target_field', value)
+                          }
+                          style={{ width: '100%' }}
+                        >
+                          {parameters.map((p) => (
+                            <Select.Option key={p.api_id} value={p.api_id}>
+                              {p.display_name} ({p.api_id})
+                            </Select.Option>
+                          ))}
+                        </Select>
                         <Input
-                          placeholder="Expression (e.g., target_id != null)"
+                          placeholder="Expression (e.g., value > 0, value != null)"
                           value={rule.expression}
                           onChange={(e) =>
                             updateValidationRule('param_validation', index, 'expression', e.target.value)
@@ -634,18 +665,41 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
                     icon={<PlusOutlined />}
                     onClick={() => addValidationRule('param_validation')}
                     block
+                    disabled={parameters.length === 0}
                   >
                     Add Rule
                   </Button>
+                  {parameters.length === 0 && (
+                    <p style={{ color: '#faad14', marginTop: 8 }}>
+                      Please define parameters in Step 3 first.
+                    </p>
+                  )}
                 </div>
               </TabPane>
               <TabPane tab="Pre-condition" key="pre_condition">
+                <p style={{ color: '#8c8c8c', marginBottom: 16 }}>
+                  Define conditions that must be true before the action executes (based on object properties).
+                </p>
                 <div>
                   {validationRules.pre_condition.map((rule, index) => (
                     <Card key={index} style={{ marginBottom: 16 }}>
                       <Space direction="vertical" style={{ width: '100%' }}>
+                        <Select
+                          placeholder="Select Object Property"
+                          value={rule.target_field || undefined}
+                          onChange={(value) =>
+                            updateValidationRule('pre_condition', index, 'target_field', value)
+                          }
+                          style={{ width: '100%' }}
+                        >
+                          {objectProperties.map((prop) => (
+                            <Select.Option key={prop.key} value={prop.key}>
+                              {prop.label} ({prop.type})
+                            </Select.Option>
+                          ))}
+                        </Select>
                         <Input
-                          placeholder="Expression (e.g., object.status == 'Active')"
+                          placeholder="Expression (e.g., value == 'Active', value > 0)"
                           value={rule.expression}
                           onChange={(e) =>
                             updateValidationRule('pre_condition', index, 'expression', e.target.value)
@@ -674,18 +728,41 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
                     icon={<PlusOutlined />}
                     onClick={() => addValidationRule('pre_condition')}
                     block
+                    disabled={objectProperties.length === 0}
                   >
                     Add Rule
                   </Button>
+                  {objectProperties.length === 0 && (
+                    <p style={{ color: '#faad14', marginTop: 8 }}>
+                      No object properties available. Please select a target object type with properties.
+                    </p>
+                  )}
                 </div>
               </TabPane>
               <TabPane tab="Post-condition" key="post_condition">
+                <p style={{ color: '#8c8c8c', marginBottom: 16 }}>
+                  Define conditions that must be true after the action executes (based on object properties).
+                </p>
                 <div>
                   {validationRules.post_condition.map((rule, index) => (
                     <Card key={index} style={{ marginBottom: 16 }}>
                       <Space direction="vertical" style={{ width: '100%' }}>
+                        <Select
+                          placeholder="Select Object Property"
+                          value={rule.target_field || undefined}
+                          onChange={(value) =>
+                            updateValidationRule('post_condition', index, 'target_field', value)
+                          }
+                          style={{ width: '100%' }}
+                        >
+                          {objectProperties.map((prop) => (
+                            <Select.Option key={prop.key} value={prop.key}>
+                              {prop.label} ({prop.type})
+                            </Select.Option>
+                          ))}
+                        </Select>
                         <Input
-                          placeholder="Expression (e.g., object.fuel > 0)"
+                          placeholder="Expression (e.g., value > 0, value != null)"
                           value={rule.expression}
                           onChange={(e) =>
                             updateValidationRule('post_condition', index, 'expression', e.target.value)
@@ -714,14 +791,19 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
                     icon={<PlusOutlined />}
                     onClick={() => addValidationRule('post_condition')}
                     block
+                    disabled={objectProperties.length === 0}
                   >
                     Add Rule
                   </Button>
+                  {objectProperties.length === 0 && (
+                    <p style={{ color: '#faad14', marginTop: 8 }}>
+                      No object properties available. Please select a target object type with properties.
+                    </p>
+                  )}
                 </div>
               </TabPane>
             </Tabs>
-          </div>
-        )}
+        </div>
 
         {/* Footer Buttons */}
         <div style={{ marginTop: 24, display: 'flex', justifyContent: 'space-between' }}>

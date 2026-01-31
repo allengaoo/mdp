@@ -36,6 +36,7 @@ interface ObjectType {
 
 interface RawTable {
   id: string;
+  connection_id?: string; // V3 field: link to sys_connection
   table_name: string;
   db_type: string;
   columns_schema: Array<{
@@ -49,6 +50,8 @@ interface LinkPropertyMapping {
   displayName: string;
   dataType: string;
   include: boolean;
+  isRequired?: boolean; // FK and PK columns are required
+  columnType?: 'PK' | 'FK'; // Column type for display
 }
 
 interface LinkTypeWizardProps {
@@ -126,6 +129,7 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
         }
         return {
           id: ds.id,
+          connection_id: ds.connection_id, // Preserve connection_id for N:N mapping
           table_name: ds.table_name,
           db_type: ds.db_type,
           columns_schema: Array.isArray(columnsSchema) ? columnsSchema : [],
@@ -195,23 +199,55 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
     setSelectedJoinTable(table || null);
     
     if (table) {
-      // Get FK columns (used in key mapping)
-      const sourceKey = form.getFieldValue('source_key_mapping');
-      const targetKey = form.getFieldValue('target_key_mapping');
-      const keyColumns = [sourceKey, targetKey].filter(Boolean);
+      // Reset key mappings when join table changes
+      form.setFieldsValue({
+        source_key_mapping: undefined,
+        target_key_mapping: undefined,
+      });
+      // Initialize link properties with all columns (will be filtered after key mapping selection)
+      updateLinkProperties(table, undefined, undefined);
+    }
+  };
+
+  // Update link properties based on selected key mappings
+  const updateLinkProperties = (table: RawTable, sourceKey?: string, targetKey?: string) => {
+    if (!table) return;
+    
+    // Get FK columns and PK column
+    const fkColumns = [sourceKey, targetKey].filter(Boolean) as string[];
+    const pkColumn = 'id'; // Primary key column name
+    
+    // Include all columns, but mark FK and PK columns as required (non-editable)
+    const properties: LinkPropertyMapping[] = table.columns_schema.map((col) => {
+      const isFk = fkColumns.includes(col.name);
+      const isPk = col.name === pkColumn;
+      const isRequired = isFk || isPk;
       
-      // Initialize link properties from remaining columns
-      const propertyColumns = table.columns_schema.filter(
-        (col) => !keyColumns.includes(col.name)
-      );
-      
-      const properties: LinkPropertyMapping[] = propertyColumns.map((col) => ({
+      return {
         column: col.name,
         displayName: col.name,
         dataType: mapColumnTypeToDataType(col.type),
-        include: true,
-      }));
-      setLinkProperties(properties);
+        include: true, // All columns default to include
+        isRequired, // Mark FK and PK columns as required (cannot be toggled off)
+        columnType: isPk ? 'PK' : isFk ? 'FK' : undefined, // Column type for display
+      };
+    });
+    setLinkProperties(properties);
+  };
+
+  // Handle source key mapping change
+  const handleSourceKeyChange = (value: string) => {
+    const targetKey = form.getFieldValue('target_key_mapping');
+    if (selectedJoinTable) {
+      updateLinkProperties(selectedJoinTable, value, targetKey);
+    }
+  };
+
+  // Handle target key mapping change
+  const handleTargetKeyChange = (value: string) => {
+    const sourceKey = form.getFieldValue('source_key_mapping');
+    if (selectedJoinTable) {
+      updateLinkProperties(selectedJoinTable, sourceKey, value);
     }
   };
 
@@ -256,20 +292,19 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
         return true;
       } else if (currentStep === 1) {
         if (cardinality === 'MANY_TO_MANY') {
-          const joinTableId = form.getFieldValue('join_table_id');
-          const sourceKey = form.getFieldValue('source_key_mapping');
-          const targetKey = form.getFieldValue('target_key_mapping');
-          if (!joinTableId || !sourceKey || !targetKey) {
-            message.error('Please complete all join table mappings');
+          // First validate join table selection
+          await form.validateFields(['join_table_id']);
+          
+          // Only validate key mappings if a join table is selected (which means the fields are rendered)
+          if (selectedJoinTable) {
+            await form.validateFields(['source_key_mapping', 'target_key_mapping']);
+          } else {
+            message.error('Please select a join table first');
             return false;
           }
         } else {
-          const sourceProperty = form.getFieldValue('source_property');
-          const targetProperty = form.getFieldValue('target_property');
-          if (!sourceProperty || !targetProperty) {
-            message.error('Please select both source and target properties');
-            return false;
-          }
+          // Validate non-N:N relationships
+          await form.validateFields(['source_property', 'target_property']);
         }
         return true;
       } else if (currentStep === 2) {
@@ -304,13 +339,31 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
     const isValid = await validateStep();
     if (!isValid) return;
 
+    // Get all form values first
+    const values = form.getFieldsValue();
+    
+    // Debug: log form values
+    console.log('[LinkTypeWizard] Form values:', values);
+    console.log('[LinkTypeWizard] Cardinality:', cardinality);
+
+    // Validate required fields before API call
+    if (!values.source_type_id || !values.target_type_id) {
+      message.error('Source and target object types are required');
+      console.error('[LinkTypeWizard] Missing source_type_id or target_type_id');
+      return;
+    }
+    if (!values.api_name) {
+      message.error('API name is required');
+      console.error('[LinkTypeWizard] Missing api_name');
+      return;
+    }
+
     try {
       setLoading(true);
-      const values = form.getFieldsValue();
 
       // Use V3 API for creation
-      // createLinkType(data, sourceObjectDefId, targetObjectDefId, cardinality, displayName)
-      await createLinkType(
+      console.log('[LinkTypeWizard] Calling createLinkType API...');
+      const result = await createLinkType(
         {
           api_name: values.api_name,
           description: values.description || null,
@@ -318,13 +371,23 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
         values.source_type_id,
         values.target_type_id,
         cardinality,
-        values.display_name
+        values.display_name || values.api_name
       );
+      console.log('[LinkTypeWizard] API response:', result);
+      
       message.success('Link type created successfully');
       onSuccess();
       handleCancel();
     } catch (error: any) {
-      message.error(error.response?.data?.detail || 'Failed to create link type');
+      console.error('[LinkTypeWizard] API error:', error);
+      const detail = error.response?.data?.detail;
+      if (Array.isArray(detail)) {
+        // Pydantic validation error format
+        const errorMsg = detail.map((d: any) => `${d.loc?.join('.')}: ${d.msg}`).join('; ');
+        message.error(errorMsg || 'Validation failed');
+      } else {
+        message.error(detail || 'Failed to create link type');
+      }
     } finally {
       setLoading(false);
     }
@@ -346,30 +409,48 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
       title: 'Raw Column Name',
       dataIndex: 'column',
       key: 'column',
-      width: 200,
-      render: (text: string) => <span style={{ fontFamily: 'monospace' }}>{text}</span>,
+      width: 180,
+      render: (text: string, record: LinkPropertyMapping) => (
+        <Space>
+          <span style={{ fontFamily: 'monospace' }}>{text}</span>
+          {record.columnType && (
+            <span style={{ 
+              fontSize: 10, 
+              padding: '2px 6px', 
+              borderRadius: 4,
+              backgroundColor: record.columnType === 'PK' ? '#722ed1' : '#1890ff',
+              color: '#fff',
+              fontWeight: 500,
+            }}>
+              {record.columnType}
+            </span>
+          )}
+        </Space>
+      ),
     },
     {
       title: 'Logical Display Name',
       key: 'displayName',
-      width: 200,
+      width: 180,
       render: (_: any, record: LinkPropertyMapping, index: number) => (
         <Input
           value={record.displayName}
           onChange={(e) => handleLinkPropertyChange(index, 'displayName', e.target.value)}
           placeholder="Display name"
+          disabled={record.isRequired} // FK and PK columns cannot be renamed
         />
       ),
     },
     {
       title: 'Data Type',
       key: 'dataType',
-      width: 150,
+      width: 130,
       render: (_: any, record: LinkPropertyMapping, index: number) => (
         <Select
           value={record.dataType}
           onChange={(value) => handleLinkPropertyChange(index, 'dataType', value)}
           style={{ width: '100%' }}
+          disabled={record.isRequired} // FK and PK columns cannot change type
         >
           {DATA_TYPE_OPTIONS.map((opt) => (
             <Select.Option key={opt.value} value={opt.value}>
@@ -387,6 +468,7 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
         <Switch
           checked={record.include}
           onChange={(checked) => handleLinkPropertyChange(index, 'include', checked)}
+          disabled={record.isRequired} // FK and PK columns must be included
         />
       ),
     },
@@ -429,9 +511,10 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
             {isManyToMany && <Step title="Link Properties" />}
           </Steps>
 
-          {/* Step 1: Definition */}
-          {currentStep === 0 && (
-            <Form form={form} layout="vertical">
+          {/* Form wraps all steps to preserve values across step navigation */}
+          <Form form={form} layout="vertical" preserve={true}>
+            {/* Step 1: Definition - use display:none instead of conditional rendering to preserve values */}
+            <div style={{ display: currentStep === 0 ? 'block' : 'none' }}>
               <Form.Item
                 name="display_name"
                 label="Name"
@@ -509,12 +592,10 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
                   </Form.Item>
                 </div>
               </Form.Item>
-            </Form>
-          )}
+            </div>
 
-      {/* Step 2: Connection Mapping */}
-      {currentStep === 1 && (
-        <div>
+            {/* Step 2: Connection Mapping - use display:none to preserve values */}
+            <div style={{ display: currentStep === 1 ? 'block' : 'none' }}>
           {!isManyToMany && (
             <div>
               <Alert
@@ -594,7 +675,10 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
                       name="source_key_mapping"
                       rules={[{ required: true, message: 'Please map source key' }]}
                     >
-                      <Select placeholder="Map Source Object PK to Join Table Column">
+                      <Select 
+                        placeholder="Map Source Object PK to Join Table Column"
+                        onChange={handleSourceKeyChange}
+                      >
                         {selectedJoinTable.columns_schema
                           .filter((col) => col.name.includes('_id') || col.name.includes('id'))
                           .map((col) => (
@@ -613,7 +697,10 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
                       name="target_key_mapping"
                       rules={[{ required: true, message: 'Please map target key' }]}
                     >
-                      <Select placeholder="Map Target Object PK to Join Table Column">
+                      <Select 
+                        placeholder="Map Target Object PK to Join Table Column"
+                        onChange={handleTargetKeyChange}
+                      >
                         {selectedJoinTable.columns_schema
                           .filter((col) => col.name.includes('_id') || col.name.includes('id'))
                           .map((col) => (
@@ -628,12 +715,10 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
               )}
             </div>
           )}
-        </div>
-      )}
+            </div>
 
-      {/* Step 3: Link Properties (Only for N:N) */}
-      {currentStep === 2 && isManyToMany && (
-        <div>
+            {/* Step 3: Link Properties (Only for N:N) - use display:none to preserve values */}
+            <div style={{ display: currentStep === 2 && isManyToMany ? 'block' : 'none' }}>
           <Alert
             message="Link Properties Mapping"
             description="Define properties that live on the link itself (e.g., 'Role', 'Assigned At'). These are mapped from the remaining columns in the join table."
@@ -641,16 +726,16 @@ const LinkTypeWizard: React.FC<LinkTypeWizardProps> = ({
             showIcon
             style={{ marginBottom: 24 }}
           />
-          <Table
-            columns={linkPropertyColumns}
-            dataSource={linkProperties}
-            rowKey="column"
-            pagination={false}
-            size="small"
-            style={{ background: '#fff' }}
-          />
-        </div>
-      )}
+              <Table
+                columns={linkPropertyColumns}
+                dataSource={linkProperties}
+                rowKey="column"
+                pagination={false}
+                size="small"
+                style={{ background: '#fff' }}
+              />
+            </div>
+          </Form>
 
           {/* Footer Buttons */}
           <div style={{ marginTop: 24, textAlign: 'right' }}>

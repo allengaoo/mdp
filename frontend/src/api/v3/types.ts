@@ -200,6 +200,8 @@ export interface IV3LinkTypeFull {
   source_object_def_id: string | null;
   target_object_def_id: string | null;
   cardinality: string | null;
+  source_key_column: string | null;
+  target_key_column: string | null;
   status: string | null;
   // Joined object type names
   source_type_name: string | null;

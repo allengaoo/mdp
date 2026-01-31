@@ -36,7 +36,13 @@ from app.models.ontology import (
 )
 from app.engine.v3 import ontology_crud
 from app.engine import meta_crud
-from app.models.meta import ActionDefWithFunction, FunctionDefForList
+from app.models.meta import (
+    ActionDefWithFunction, 
+    FunctionDefForList,
+    ActionDefinitionCreate,
+    ActionDefinitionUpdate,
+    ActionDefinitionRead,
+)
 
 router = APIRouter(prefix="/ontology", tags=["Ontology"])
 
@@ -339,10 +345,10 @@ def get_link_type(
 @router.post("/link-types", response_model=LinkTypeFullRead, status_code=status.HTTP_201_CREATED)
 def create_link_type(
     data: LinkTypeDefCreate,
-    source_object_def_id: str,
-    target_object_def_id: str,
-    cardinality: str = "MANY_TO_MANY",
-    display_name: str = None,
+    source_object_def_id: str = Query(..., description="Source object type definition ID"),
+    target_object_def_id: str = Query(..., description="Target object type definition ID"),
+    cardinality: str = Query("MANY_TO_MANY", description="Cardinality: ONE_TO_ONE, ONE_TO_MANY, MANY_TO_MANY"),
+    display_name: Optional[str] = Query(None, description="Display name for the link type"),
     session: Session = Depends(get_session)
 ):
     """Create a new link type definition with initial version."""
@@ -410,6 +416,76 @@ def list_actions_with_functions(
     Used by the Actions & Logic page.
     """
     return meta_crud.list_actions_with_functions(session, skip=skip, limit=limit)
+
+
+@router.post("/actions", response_model=ActionDefinitionRead, status_code=status.HTTP_201_CREATED)
+def create_action_definition(
+    data: ActionDefinitionCreate,
+    session: Session = Depends(get_session)
+):
+    """
+    Create a new action definition.
+    
+    Supports full action structure including:
+    - operation_type: update_property, link_objects, unlink_objects, execute_script
+    - target_object_type_id: target object type for the action
+    - parameters_schema: input parameters definition
+    - property_mapping: mapping from parameters to object properties
+    - validation_rules: param_validation, pre_condition, post_condition
+    """
+    try:
+        return meta_crud.create_action_definition(session, data)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to create action definition: {str(e)}"
+        )
+
+
+@router.get("/actions/{action_id}", response_model=ActionDefinitionRead)
+def get_action_definition(
+    action_id: str,
+    session: Session = Depends(get_session)
+):
+    """Get action definition by ID."""
+    action = meta_crud.get_action_definition(session, action_id)
+    if not action:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Action definition not found: {action_id}"
+        )
+    return action
+
+
+@router.put("/actions/{action_id}", response_model=ActionDefinitionRead)
+def update_action_definition(
+    action_id: str,
+    data: ActionDefinitionUpdate,
+    session: Session = Depends(get_session)
+):
+    """Update an existing action definition."""
+    action = meta_crud.update_action_definition(session, action_id, data)
+    if not action:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Action definition not found: {action_id}"
+        )
+    return action
+
+
+@router.delete("/actions/{action_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_action_definition(
+    action_id: str,
+    session: Session = Depends(get_session)
+):
+    """Delete an action definition."""
+    success = meta_crud.delete_action_definition(session, action_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Action definition not found: {action_id}"
+        )
+    return None
 
 
 @router.get("/functions/for-list", response_model=List[FunctionDefForList])

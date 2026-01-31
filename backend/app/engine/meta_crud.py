@@ -729,6 +729,11 @@ def list_link_types(session: Session, skip: int = 0, limit: int = 100) -> List[L
     return list(results.all())
 
 
+def _use_v3_link_tables(session: Session) -> bool:
+    """检查是否应该使用 V3 架构的 link 表（meta_link_type_def + meta_link_type_ver）。"""
+    return _check_table_exists(session, "meta_link_type_def")
+
+
 def update_link_type(
     session: Session,
     obj_id: str,
@@ -736,15 +741,68 @@ def update_link_type(
 ) -> Optional[LinkType]:
     """Update an existing LinkType.
     
-    如果底层表 ont_link_type 存在，则更新该表；
-    否则更新 meta_link_type 表（旧架构）。
+    支持三种架构：
+    1. V3 架构：meta_link_type_def + meta_link_type_ver（优先）
+    2. ont_link_type 底层表
+    3. 旧架构：meta_link_type 表
     """
     logger.info(f"Updating LinkType: {obj_id}")
     
     try:
         update_data = obj_in.model_dump(exclude_unset=True)
         
-        if _use_ont_link_tables(session):
+        # 优先检查 V3 架构
+        if _use_v3_link_tables(session):
+            logger.info("Using V3 architecture: updating meta_link_type_ver")
+            
+            # 查找 LinkTypeDef 及其当前版本
+            from app.models.ontology import LinkTypeDef, LinkTypeVer
+            
+            link_def = session.get(LinkTypeDef, obj_id)
+            if not link_def:
+                logger.warning(f"LinkTypeDef not found: {obj_id}")
+                return None
+            
+            if not link_def.current_version_id:
+                logger.warning(f"LinkTypeDef {obj_id} has no current version")
+                return None
+            
+            link_ver = session.get(LinkTypeVer, link_def.current_version_id)
+            if not link_ver:
+                logger.warning(f"LinkTypeVer not found: {link_def.current_version_id}")
+                return None
+            
+            # 更新版本记录
+            if 'display_name' in update_data:
+                link_ver.display_name = update_data['display_name']
+            if 'cardinality' in update_data:
+                link_ver.cardinality = update_data['cardinality']
+            if 'source_type_id' in update_data:
+                link_ver.source_object_def_id = update_data['source_type_id']
+            if 'target_type_id' in update_data:
+                link_ver.target_object_def_id = update_data['target_type_id']
+            if 'source_key_column' in update_data:
+                link_ver.source_key_column = update_data['source_key_column']
+            if 'target_key_column' in update_data:
+                link_ver.target_key_column = update_data['target_key_column']
+            
+            session.add(link_ver)
+            session.commit()
+            session.refresh(link_ver)
+            
+            logger.info(f"LinkType updated successfully (V3): {obj_id}")
+            return LinkType(
+                id=link_def.id,
+                api_name=link_def.api_name,
+                display_name=link_ver.display_name,
+                source_type_id=link_ver.source_object_def_id,
+                target_type_id=link_ver.target_object_def_id,
+                cardinality=link_ver.cardinality,
+                source_key_column=link_ver.source_key_column,
+                target_key_column=link_ver.target_key_column
+            )
+        
+        elif _use_ont_link_tables(session):
             logger.info("Using new architecture: updating ont_link_type")
             
             # 检查记录是否存在

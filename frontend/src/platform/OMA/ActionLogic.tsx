@@ -46,6 +46,7 @@ import {
   IParamSchema,
   IActionExecuteResponse,
 } from '../../api/v3/logic';
+import ActionWizard from '../Studio/ActionWizard';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -574,6 +575,9 @@ const ActionLogic: React.FC = () => {
   // Execute Modal state
   const [executeModalVisible, setExecuteModalVisible] = useState(false);
   const [selectedAction, setSelectedAction] = useState<IActionWithFunction | null>(null);
+  
+  // Create Action Wizard state
+  const [actionWizardVisible, setActionWizardVisible] = useState(false);
 
   // Load data
   const loadData = useCallback(async () => {
@@ -696,9 +700,20 @@ const ActionLogic: React.FC = () => {
           <Button icon={<ReloadOutlined />} onClick={loadData} loading={loading}>
             刷新
           </Button>
-          <Button type="primary" icon={<PlusOutlined />}>
-            新建 {activeTab === 'actions' ? 'Action' : 'Function'}
-          </Button>
+          {activeTab === 'actions' && (
+            <Button 
+              type="primary" 
+              icon={<PlusOutlined />}
+              onClick={() => setActionWizardVisible(true)}
+            >
+              新建 Action
+            </Button>
+          )}
+          {activeTab === 'functions' && (
+            <Button type="primary" icon={<PlusOutlined />}>
+              新建 Function
+            </Button>
+          )}
         </Space>
       </div>
 
@@ -734,6 +749,16 @@ const ActionLogic: React.FC = () => {
         action={selectedAction}
         onClose={() => setExecuteModalVisible(false)}
         onExecuted={loadData}
+      />
+
+      {/* Create Action Wizard */}
+      <ActionWizard
+        visible={actionWizardVisible}
+        onCancel={() => setActionWizardVisible(false)}
+        onSuccess={() => {
+          setActionWizardVisible(false);
+          loadData();
+        }}
       />
     </div>
   );

@@ -272,9 +272,27 @@ def publish_mapping(session: Session, mapping_id: str) -> Optional[ObjectMapping
 
 def create_link_mapping(session: Session, data: LinkMappingDefCreate) -> LinkMappingDef:
     """Create a new link mapping definition."""
+    # Auto-resolve source_connection_id if not provided
+    source_connection_id = data.source_connection_id
+    if not source_connection_id:
+        # Query sys_dataset to find connection_id by table name
+        from sqlalchemy import text
+        result = session.exec(text("""
+            SELECT connection_id FROM sys_dataset 
+            WHERE name = :table_name 
+            OR JSON_UNQUOTE(JSON_EXTRACT(location_config, '$.table')) = :table_name
+            LIMIT 1
+        """), params={"table_name": data.join_table_name})
+        row = result.first()
+        if row:
+            source_connection_id = row[0]
+            logger.info(f"[Mapping] Auto-resolved connection_id: {source_connection_id} for table: {data.join_table_name}")
+        else:
+            logger.warning(f"[Mapping] Could not auto-resolve connection_id for table: {data.join_table_name}")
+    
     mapping = LinkMappingDef(
         link_def_id=data.link_def_id,
-        source_connection_id=data.source_connection_id,
+        source_connection_id=source_connection_id,
         join_table_name=data.join_table_name,
         source_key_column=data.source_key_column,
         target_key_column=data.target_key_column,

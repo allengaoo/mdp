@@ -173,8 +173,11 @@ const ActionEditor: React.FC<ActionEditorProps> = ({ visible, action, onCancel, 
         const response = await apiClient.get('/meta/object-types', {
           params: { limit: 100 },
         });
+        // Include objects with matching project_id OR no project_id (global objects)
         const filtered = projectId
-          ? response.data.filter((ot: ObjectTypeData) => ot.project_id === projectId)
+          ? response.data.filter((ot: ObjectTypeData) => 
+              ot.project_id === projectId || ot.project_id === null || ot.project_id === undefined
+            )
           : response.data;
         setObjectTypes(filtered);
         

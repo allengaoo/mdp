@@ -128,3 +128,113 @@ export const executeAction = async (
   const response = await v3Client.post(`/ontology/actions/${actionId}/execute`, request);
   return response.data;
 };
+
+// ==========================================
+// Action Definition CRUD
+// ==========================================
+
+/**
+ * Validation rule for action definition.
+ */
+export interface IValidationRule {
+  target_field: string;
+  expression: string;
+  error_message: string;
+}
+
+/**
+ * Action definition create payload.
+ */
+export interface IActionDefinitionCreate {
+  api_name: string;
+  display_name: string;
+  description?: string;
+  operation_type?: string;
+  target_object_type_id?: string;
+  parameters_schema?: Array<{
+    api_id: string;
+    display_name: string;
+    type: string;
+    required?: boolean;
+    default_value?: string;
+  }>;
+  property_mapping?: Record<string, string>;
+  validation_rules?: {
+    param_validation: IValidationRule[];
+    pre_condition: IValidationRule[];
+    post_condition: IValidationRule[];
+  };
+  backing_function_id?: string;
+  project_id?: string;
+}
+
+/**
+ * Action definition read response.
+ */
+export interface IActionDefinitionRead {
+  id: string;
+  api_name: string;
+  display_name: string;
+  description?: string;
+  operation_type?: string;
+  target_object_type_id?: string;
+  parameters_schema?: any[];
+  property_mapping?: Record<string, string>;
+  validation_rules?: {
+    param_validation: IValidationRule[];
+    pre_condition: IValidationRule[];
+    post_condition: IValidationRule[];
+  };
+  backing_function_id?: string;
+  project_id?: string;
+}
+
+/**
+ * Create a new action definition.
+ * 
+ * @param data - Action definition create payload
+ * @returns Created action definition
+ */
+export const createActionDefinition = async (
+  data: IActionDefinitionCreate
+): Promise<IActionDefinitionRead> => {
+  const response = await v3Client.post('/ontology/actions', data);
+  return response.data;
+};
+
+/**
+ * Get action definition by ID.
+ * 
+ * @param actionId - The action ID
+ * @returns Action definition
+ */
+export const getActionDefinition = async (
+  actionId: string
+): Promise<IActionDefinitionRead> => {
+  const response = await v3Client.get(`/ontology/actions/${actionId}`);
+  return response.data;
+};
+
+/**
+ * Update an action definition.
+ * 
+ * @param actionId - The action ID
+ * @param data - Action definition update payload
+ * @returns Updated action definition
+ */
+export const updateActionDefinition = async (
+  actionId: string,
+  data: Partial<IActionDefinitionCreate>
+): Promise<IActionDefinitionRead> => {
+  const response = await v3Client.put(`/ontology/actions/${actionId}`, data);
+  return response.data;
+};
+
+/**
+ * Delete an action definition.
+ * 
+ * @param actionId - The action ID
+ */
+export const deleteActionDefinition = async (actionId: string): Promise<void> => {
+  await v3Client.delete(`/ontology/actions/${actionId}`);
+};

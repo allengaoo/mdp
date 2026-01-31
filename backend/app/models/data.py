@@ -35,6 +35,7 @@ class DataSourceTable(SQLModel, table=True):
     __tablename__ = "sys_datasource_table"
     
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    connection_id: Optional[str] = Field(default=None, max_length=36)  # V3 field: link to sys_connection
     table_name: str = Field(unique=True, index=True, max_length=100)
     db_type: str = Field(default="MySQL", max_length=20)
     columns_schema: Optional[List[Dict[str, Any]]] = Field(default=None, sa_column=Column(JSON))
@@ -55,6 +56,7 @@ class DataSourceTableCreate(SQLModel):
 class DataSourceTableRead(SQLModel):
     """DTO for reading DataSourceTable."""
     id: str
+    connection_id: Optional[str] = None  # V3 field: link to sys_connection
     table_name: str
     db_type: str
     columns_schema: Optional[List[Dict[str, Any]]]

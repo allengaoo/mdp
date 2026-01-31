@@ -45,6 +45,8 @@ class LinkType(SQLModel, table=True):
     source_type_id: str = Field(foreign_key="meta_object_type.id", max_length=36)
     target_type_id: str = Field(foreign_key="meta_object_type.id", max_length=36)
     cardinality: str = Field(default="MANY_TO_MANY", max_length=50)
+    source_key_column: Optional[str] = Field(default=None, max_length=100)
+    target_key_column: Optional[str] = Field(default=None, max_length=100)
 
 
 class FunctionDefinition(SQLModel, table=True):
@@ -68,7 +70,14 @@ class ActionDefinition(SQLModel, table=True):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     api_name: str = Field(unique=True, index=True, max_length=100)
     display_name: str = Field(max_length=200)
-    backing_function_id: str = Field(foreign_key="meta_function_def.id", max_length=36)
+    description: Optional[str] = Field(default=None, max_length=500)
+    operation_type: Optional[str] = Field(default=None, max_length=50)
+    target_object_type_id: Optional[str] = Field(default=None, foreign_key="meta_object_type.id", max_length=36)
+    parameters_schema: Optional[List[Dict[str, Any]]] = Field(default=None, sa_column=Column(JSON))
+    property_mapping: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
+    validation_rules: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
+    backing_function_id: Optional[str] = Field(default=None, foreign_key="meta_function_def.id", max_length=36)
+    project_id: Optional[str] = Field(default=None, foreign_key="meta_project.id", max_length=36)
 
 
 class SharedProperty(SQLModel, table=True):
@@ -196,6 +205,8 @@ class LinkTypeUpdate(SQLModel):
     source_type_id: Optional[str] = Field(default=None, max_length=36)
     target_type_id: Optional[str] = Field(default=None, max_length=36)
     cardinality: Optional[str] = Field(default=None, max_length=50)
+    source_key_column: Optional[str] = Field(default=None, max_length=100)
+    target_key_column: Optional[str] = Field(default=None, max_length=100)
 
 
 class LinkTypeRead(SQLModel):
@@ -206,6 +217,8 @@ class LinkTypeRead(SQLModel):
     source_type_id: str
     target_type_id: str
     cardinality: str
+    source_key_column: Optional[str] = None
+    target_key_column: Optional[str] = None
 
 
 # ==========================================
@@ -253,13 +266,27 @@ class ActionDefinitionCreate(SQLModel):
     """DTO for creating ActionDefinition."""
     api_name: str = Field(max_length=100)
     display_name: str = Field(max_length=200)
-    backing_function_id: str = Field(max_length=36)
+    description: Optional[str] = Field(default=None, max_length=500)
+    operation_type: Optional[str] = Field(default=None, max_length=50)
+    target_object_type_id: Optional[str] = Field(default=None, max_length=36)
+    parameters_schema: Optional[List[Dict[str, Any]]] = None
+    property_mapping: Optional[Dict[str, Any]] = None
+    validation_rules: Optional[Dict[str, Any]] = None
+    backing_function_id: Optional[str] = Field(default=None, max_length=36)
+    project_id: Optional[str] = Field(default=None, max_length=36)
 
 
 class ActionDefinitionUpdate(SQLModel):
     """DTO for updating ActionDefinition."""
     display_name: Optional[str] = Field(default=None, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=500)
+    operation_type: Optional[str] = Field(default=None, max_length=50)
+    target_object_type_id: Optional[str] = Field(default=None, max_length=36)
+    parameters_schema: Optional[List[Dict[str, Any]]] = None
+    property_mapping: Optional[Dict[str, Any]] = None
+    validation_rules: Optional[Dict[str, Any]] = None
     backing_function_id: Optional[str] = Field(default=None, max_length=36)
+    project_id: Optional[str] = Field(default=None, max_length=36)
 
 
 class ActionDefinitionRead(SQLModel):
@@ -267,7 +294,14 @@ class ActionDefinitionRead(SQLModel):
     id: str
     api_name: str
     display_name: str
-    backing_function_id: str
+    description: Optional[str] = None
+    operation_type: Optional[str] = None
+    target_object_type_id: Optional[str] = None
+    parameters_schema: Optional[List[Dict[str, Any]]] = None
+    property_mapping: Optional[Dict[str, Any]] = None
+    validation_rules: Optional[Dict[str, Any]] = None
+    backing_function_id: Optional[str] = None
+    project_id: Optional[str] = None
 
 
 # ==========================================

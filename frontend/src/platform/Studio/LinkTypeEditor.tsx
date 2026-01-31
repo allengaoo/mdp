@@ -51,6 +51,8 @@ interface LinkTypeData {
   source_object_def_id: string;
   target_object_def_id: string;
   cardinality: string;
+  source_key_column?: string | null;
+  target_key_column?: string | null;
 }
 
 interface LinkTypeEditorProps {
@@ -106,10 +108,13 @@ const LinkTypeEditor: React.FC<LinkTypeEditorProps> = ({
           setObjectTypes(objectTypesData);
           setDatasources(datasourcesData);
 
-          // If editing existing link type, fetch mapping
-          if (linkType) {
+          // Only fetch mapping for MANY_TO_MANY link types (they need join tables)
+          // 1:N and 1:1 link types don't have mappings, so skip the API call
+          if (linkType && linkType.cardinality === 'MANY_TO_MANY') {
             const mapping = await getLinkMappingByDefId(linkType.id);
             setExistingMapping(mapping);
+          } else {
+            setExistingMapping(null);
           }
         } catch (error: any) {
           message.error(error.response?.data?.detail || 'Failed to load data');
@@ -122,106 +127,102 @@ const LinkTypeEditor: React.FC<LinkTypeEditorProps> = ({
     }
   }, [visible, projectId, linkType]);
 
-  // Initialize form when linkType changes
+  // Track if form basic fields have been initialized for current linkType
+  const [isBasicFormInitialized, setIsBasicFormInitialized] = useState(false);
+  // Track if join table mapping has been initialized
+  const [isMappingInitialized, setIsMappingInitialized] = useState(false);
+
+  // Initialize basic form fields when linkType changes (only once per modal open)
   useEffect(() => {
-    if (linkType && visible) {
+    if (linkType && visible && !isBasicFormInitialized) {
       form.setFieldsValue({
         display_name: linkType.display_name,
         // Note: description field removed - not in database schema
         source_object_def_id: linkType.source_object_def_id,
         target_object_def_id: linkType.target_object_def_id,
         cardinality: linkType.cardinality,
+        source_key_column: linkType.source_key_column || '',
+        target_key_column: linkType.target_key_column || '',
       });
       setCardinality(linkType.cardinality);
-      
-      // Initialize join table and properties if M:N and mapping exists
-      if (linkType.cardinality === 'MANY_TO_MANY' && existingMapping) {
-        // Find the table in datasources (might need to fetch if not loaded)
-        // Assuming datasources are loaded by the time existingMapping is set
-        const table = datasources.find(t => t.id === existingMapping.source_connection_id); // Note: source_connection_id might be connection ID, not table ID. 
-        // Actually IDataSourceTable.id is usually connection_id or similar. 
-        // Let's assume datasources list contains tables with IDs that match what we store.
-        // Wait, IDataSourceTable usually has `id` as connection_id or a unique ID.
-        // Let's check IDataSourceTable definition.
-        // It seems fetchDatasources returns tables.
-        
-        // Let's try to match by table name if ID doesn't match directly, or just use the ID stored.
-        // For now, let's assume we store table ID or connection ID + table name.
-        // LinkMappingDef stores source_connection_id and join_table_name.
-        
-        const matchedTable = datasources.find(
-          t => t.connection_id === existingMapping.source_connection_id && t.table_name === existingMapping.join_table_name
-        );
-
-        if (matchedTable) {
-          setSelectedJoinTable(matchedTable);
-          form.setFieldsValue({
-            join_table_id: matchedTable.id,
-            source_key_mapping: existingMapping.source_key_column,
-            target_key_mapping: existingMapping.target_key_column,
-          });
-
-          // Restore property mappings
-          const columns = parseColumnsSchema(matchedTable.columns_schema);
-          const keyColumns = [existingMapping.source_key_column, existingMapping.target_key_column];
-          const propertyColumns = columns.filter(
-            (col) => !keyColumns.includes(col.name)
-          );
-          
-          const properties: LinkPropertyMapping[] = propertyColumns.map((col) => {
-            const mappedProp = existingMapping.property_mappings[col.name];
-            return {
-              column: col.name,
-              displayName: mappedProp || col.name, // If mapped, use it (or maybe key is prop name?)
-              // Actually property_mappings is { "link_prop": "table_col" } usually, or { "table_col": "link_prop" }?
-              // The model says: property_mappings: Dict[str, str] = Field(default={}, sa_column=Column(JSON))  # { "link_prop": "table_col" }
-              // So we need to find if this column is in values.
-              
-              // Let's reverse lookup
-              dataType: mapColumnTypeToDataType(col.type),
-              include: Object.values(existingMapping.property_mappings).includes(col.name),
-            };
-          });
-          
-          // Update display names from mapping keys
-          properties.forEach(p => {
-             const entry = Object.entries(existingMapping.property_mappings).find(([k, v]) => v === p.column);
-             if (entry) {
-               p.displayName = entry[0];
-             }
-          });
-
-          setLinkProperties(properties);
-        }
-      } else if (linkType.cardinality === 'MANY_TO_MANY' && !existingMapping) {
-        // Default initialization if no mapping exists (same as before)
-        if (datasources.length > 0) {
-          const defaultTable = datasources[0];
-          setSelectedJoinTable(defaultTable);
-          const columns = parseColumnsSchema(defaultTable.columns_schema);
-          if (columns.length >= 2) {
-            form.setFieldsValue({
-              join_table_id: defaultTable.id,
-              source_key_mapping: columns[0]?.name,
-              target_key_mapping: columns[1]?.name,
-            });
-            // Initialize link properties
-            const keyColumns = [columns[0]?.name, columns[1]?.name];
-            const propertyColumns = columns.filter(
-              (col) => !keyColumns.includes(col.name)
-            );
-            const properties: LinkPropertyMapping[] = propertyColumns.map((col) => ({
-              column: col.name,
-              displayName: col.name,
-              dataType: mapColumnTypeToDataType(col.type),
-              include: true,
-            }));
-            setLinkProperties(properties);
-          }
-        }
-      }
+      setIsBasicFormInitialized(true);
     }
-  }, [linkType, visible, form, datasources, existingMapping]);
+  }, [linkType, visible, form, isBasicFormInitialized]);
+
+  // Initialize join table mapping separately (when async data is loaded)
+  useEffect(() => {
+    if (!linkType || !visible || isMappingInitialized) return;
+    if (cardinality !== 'MANY_TO_MANY') return;
+    if (datasources.length === 0) return; // Wait for datasources to load
+    
+    if (existingMapping) {
+      // Initialize from existing mapping
+      const matchedTable = datasources.find(
+        t => t.connection_id === existingMapping.source_connection_id && t.table_name === existingMapping.join_table_name
+      );
+
+      if (matchedTable) {
+        setSelectedJoinTable(matchedTable);
+        form.setFieldsValue({
+          join_table_id: matchedTable.id,
+          source_key_mapping: existingMapping.source_key_column,
+          target_key_mapping: existingMapping.target_key_column,
+        });
+
+        // Restore property mappings
+        const columns = parseColumnsSchema(matchedTable.columns_schema);
+        const keyColumns = [existingMapping.source_key_column, existingMapping.target_key_column];
+        const propertyColumns = columns.filter(
+          (col) => !keyColumns.includes(col.name)
+        );
+        
+        const properties: LinkPropertyMapping[] = propertyColumns.map((col) => {
+          return {
+            column: col.name,
+            displayName: col.name,
+            dataType: mapColumnTypeToDataType(col.type),
+            include: Object.values(existingMapping.property_mappings).includes(col.name),
+          };
+        });
+        
+        // Update display names from mapping keys
+        properties.forEach(p => {
+           const entry = Object.entries(existingMapping.property_mappings).find(([k, v]) => v === p.column);
+           if (entry) {
+             p.displayName = entry[0];
+           }
+        });
+
+        setLinkProperties(properties);
+        setIsMappingInitialized(true);
+      }
+    } else {
+      // Default initialization if no mapping exists
+      const defaultTable = datasources[0];
+      setSelectedJoinTable(defaultTable);
+      const columns = parseColumnsSchema(defaultTable.columns_schema);
+      if (columns.length >= 2) {
+        form.setFieldsValue({
+          join_table_id: defaultTable.id,
+          source_key_mapping: columns[0]?.name,
+          target_key_mapping: columns[1]?.name,
+        });
+        // Initialize link properties
+        const keyColumns = [columns[0]?.name, columns[1]?.name];
+        const propertyColumns = columns.filter(
+          (col) => !keyColumns.includes(col.name)
+        );
+        const properties: LinkPropertyMapping[] = propertyColumns.map((col) => ({
+          column: col.name,
+          displayName: col.name,
+          dataType: mapColumnTypeToDataType(col.type),
+          include: true,
+        }));
+        setLinkProperties(properties);
+      }
+      setIsMappingInitialized(true);
+    }
+  }, [linkType, visible, cardinality, datasources, existingMapping, form, isMappingInitialized]);
 
   // Parse columns_schema (can be string or array)
   const parseColumnsSchema = (
@@ -311,21 +312,6 @@ const LinkTypeEditor: React.FC<LinkTypeEditorProps> = ({
     return objectTypes.find((ot) => ot.id === targetTypeId);
   };
 
-  // Get object properties (for FK mapping)
-  const getObjectProperties = (objectType: IObjectType | undefined): string[] => {
-    if (!objectType || !objectType.property_schema) {
-      return ['id']; // Default PK
-    }
-    // Handle property_schema as object or array
-    if (Array.isArray(objectType.property_schema)) {
-      return objectType.property_schema.map((prop: any) => prop.key || prop.name || String(prop));
-    }
-    if (typeof objectType.property_schema === 'object') {
-      return Object.keys(objectType.property_schema);
-    }
-    return ['id']; // Default PK
-  };
-
   // Handle join table selection
   const handleJoinTableSelect = (tableId: string) => {
     const table = datasources.find((t) => t.id === tableId);
@@ -371,11 +357,17 @@ const LinkTypeEditor: React.FC<LinkTypeEditorProps> = ({
       setLoading(true);
       const values = form.getFieldsValue();
 
-      const payload = {
+      const payload: Record<string, any> = {
         display_name: values.display_name,
         // Note: description field removed - not in database schema
         cardinality: cardinality,
       };
+
+      // Add key column fields for non-MANY_TO_MANY relationships
+      if (cardinality !== 'MANY_TO_MANY') {
+        payload.source_key_column = values.source_key_column || null;
+        payload.target_key_column = values.target_key_column || null;
+      }
 
       await apiClient.put(`/meta/link-types/${linkType?.id}`, payload);
 
@@ -424,6 +416,8 @@ const LinkTypeEditor: React.FC<LinkTypeEditorProps> = ({
     setCardinality('ONE_TO_MANY');
     setSelectedJoinTable(null);
     setLinkProperties([]);
+    setIsBasicFormInitialized(false);
+    setIsMappingInitialized(false);
     onCancel();
   };
 
@@ -551,43 +545,33 @@ const LinkTypeEditor: React.FC<LinkTypeEditorProps> = ({
 
         <Divider />
 
-        {/* Reactive Mapping Section */}
+        {/* Key Column Mapping Section for 1:N, N:1, 1:1 relationships */}
         {!isManyToMany && (
           <div>
-            <h4 style={{ marginBottom: 16 }}>Foreign Key Mapping</h4>
+            <h4 style={{ marginBottom: 16 }}>Key Column Mapping</h4>
             <Alert
-              message="Foreign Key Mapping"
-              description="Map the source and target object properties for the relationship."
+              message="Key Column Configuration"
+              description="Specify the source table's primary key column and the target table's foreign key column for this relationship."
               type="info"
               showIcon
               style={{ marginBottom: 16 }}
             />
             <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
               <Form.Item
-                name="source_property"
-                label="Source Object Property"
+                name="source_key_column"
+                label="Source Key Column (PK)"
                 style={{ flex: 1 }}
+                tooltip="The primary key column in the source table (e.g., 'id')"
               >
-                <Select placeholder="Select property (default: PK)">
-                  {getObjectProperties(sourceObject).map((prop) => (
-                    <Select.Option key={prop} value={prop}>
-                      {prop} {prop === 'id' ? '(PK)' : ''}
-                    </Select.Option>
-                  ))}
-                </Select>
+                <Input placeholder="e.g., id" />
               </Form.Item>
               <Form.Item
-                name="target_property"
-                label="Target Object Property (FK)"
+                name="target_key_column"
+                label="Target Key Column (FK)"
                 style={{ flex: 1 }}
+                tooltip="The foreign key column in the target table that references the source (e.g., 'report_id')"
               >
-                <Select placeholder="Select foreign key property">
-                  {getObjectProperties(targetObject).map((prop) => (
-                    <Select.Option key={prop} value={prop}>
-                      {prop}
-                    </Select.Option>
-                  ))}
-                </Select>
+                <Input placeholder="e.g., report_id" />
               </Form.Item>
             </div>
           </div>

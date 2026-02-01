@@ -65,6 +65,7 @@ export interface IActionDetails {
 export interface IActionExecuteRequest {
   params: Record<string, any>;
   project_id?: string;
+  source_id?: string;  // When provided, backend builds context with source object (V1 compatibility)
 }
 
 /**
@@ -94,6 +95,18 @@ export const fetchActionsWithFunctions = async (): Promise<IActionWithFunction[]
 };
 
 /**
+ * Fetch action definitions with optional project filter.
+ * 
+ * @param projectId - Optional project ID to filter by
+ * @returns List of action definitions
+ */
+export const fetchActions = async (projectId?: string): Promise<IActionDefinitionRead[]> => {
+  const params = projectId ? { project_id: projectId } : {};
+  const response = await v3Client.get('/ontology/actions', { params });
+  return response.data || [];
+};
+
+/**
  * Fetch all functions for list display.
  * 
  * @returns List of functions with code content for preview
@@ -102,6 +115,79 @@ export const fetchFunctionsForList = async (): Promise<IFunctionDef[]> => {
   const response = await v3Client.get('/ontology/functions/for-list');
   return response.data || [];
 };
+
+/**
+ * Fetch functions with optional project filter.
+ * 
+ * @param projectId - Optional project ID (Studio context)
+ * @returns List of function definitions
+ */
+export const fetchFunctions = async (projectId?: string): Promise<IFunctionRead[]> => {
+  const params = projectId ? { project_id: projectId } : {};
+  const response = await v3Client.get('/ontology/functions', { params });
+  return response.data || [];
+};
+
+/**
+ * Create a new function definition.
+ */
+export const createFunction = async (data: IFunctionCreate): Promise<IFunctionRead> => {
+  const response = await v3Client.post('/ontology/functions', data);
+  return response.data;
+};
+
+/**
+ * Get function definition by ID.
+ */
+export const getFunction = async (functionId: string): Promise<IFunctionRead> => {
+  const response = await v3Client.get(`/ontology/functions/${functionId}`);
+  return response.data;
+};
+
+/**
+ * Update an existing function definition.
+ */
+export const updateFunction = async (
+  functionId: string,
+  data: Partial<IFunctionCreate>
+): Promise<IFunctionRead> => {
+  const response = await v3Client.put(`/ontology/functions/${functionId}`, data);
+  return response.data;
+};
+
+/**
+ * Delete a function definition.
+ */
+export const deleteFunction = async (functionId: string): Promise<void> => {
+  await v3Client.delete(`/ontology/functions/${functionId}`);
+};
+
+// ==========================================
+// Function Definition Types
+// ==========================================
+
+export interface IFunctionCreate {
+  api_name: string;
+  display_name: string;
+  description?: string;
+  code_content?: string;
+  input_params_schema?: Array<{ name: string; type: string; required?: boolean }>;
+  output_type?: string;
+  bound_object_type_id?: string | null;
+  project_id?: string | null;
+}
+
+export interface IFunctionRead {
+  id: string;
+  api_name: string;
+  display_name: string;
+  description?: string;
+  code_content?: string;
+  input_params_schema?: Array<{ name: string; type: string; required?: boolean }>;
+  output_type: string;
+  bound_object_type_id?: string | null;
+  project_id?: string | null;
+}
 
 /**
  * Fetch action details including input params schema.
@@ -151,6 +237,7 @@ export interface IActionDefinitionCreate {
   description?: string;
   operation_type?: string;
   target_object_type_id?: string;
+  link_type_id?: string;
   parameters_schema?: Array<{
     api_id: string;
     display_name: string;
@@ -178,6 +265,7 @@ export interface IActionDefinitionRead {
   description?: string;
   operation_type?: string;
   target_object_type_id?: string;
+  link_type_id?: string;
   parameters_schema?: any[];
   property_mapping?: Record<string, string>;
   validation_rules?: {

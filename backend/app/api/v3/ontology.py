@@ -39,6 +39,9 @@ from app.engine import meta_crud
 from app.models.meta import (
     ActionDefWithFunction, 
     FunctionDefForList,
+    FunctionDefinitionCreate,
+    FunctionDefinitionUpdate,
+    FunctionDefinitionRead,
     ActionDefinitionCreate,
     ActionDefinitionUpdate,
     ActionDefinitionRead,
@@ -418,6 +421,30 @@ def list_actions_with_functions(
     return meta_crud.list_actions_with_functions(session, skip=skip, limit=limit)
 
 
+@router.get("/actions", response_model=List[ActionDefinitionRead])
+def list_actions(
+    project_id: Optional[str] = Query(None, description="Filter by project ID"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    session: Session = Depends(get_session)
+):
+    """
+    List action definitions with optional project filter.
+    
+    Used by Ontology Studio's Action Definition List.
+    """
+    from sqlmodel import select
+    from app.models.meta import ActionDefinition
+    
+    query = select(ActionDefinition)
+    if project_id:
+        query = query.where(ActionDefinition.project_id == project_id)
+    query = query.offset(skip).limit(limit)
+    
+    results = session.exec(query).all()
+    return results
+
+
 @router.post("/actions", response_model=ActionDefinitionRead, status_code=status.HTTP_201_CREATED)
 def create_action_definition(
     data: ActionDefinitionCreate,
@@ -503,6 +530,90 @@ def list_functions_for_list(
     return meta_crud.list_functions_for_list(session, skip=skip, limit=limit)
 
 
+@router.get("/functions", response_model=List[FunctionDefinitionRead])
+def list_functions(
+    project_id: Optional[str] = Query(None, description="Filter by project ID"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    session: Session = Depends(get_session)
+):
+    """
+    List function definitions with optional project filter.
+    
+    Used by Studio FunctionList (project-scoped) and OMA (all when no project_id).
+    """
+    from sqlmodel import select
+    from app.models.meta import FunctionDefinition
+
+    query = select(FunctionDefinition)
+    if project_id:
+        query = query.where(FunctionDefinition.project_id == project_id)
+    query = query.offset(skip).limit(limit)
+    results = session.exec(query).all()
+    return results
+
+
+@router.post("/functions", response_model=FunctionDefinitionRead, status_code=status.HTTP_201_CREATED)
+def create_function_definition(
+    data: FunctionDefinitionCreate,
+    session: Session = Depends(get_session)
+):
+    """Create a new function definition."""
+    try:
+        return meta_crud.create_function_definition(session, data)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to create function definition: {str(e)}"
+        )
+
+
+@router.get("/functions/{func_id}", response_model=FunctionDefinitionRead)
+def get_function_definition(
+    func_id: str,
+    session: Session = Depends(get_session)
+):
+    """Get function definition by ID."""
+    func = meta_crud.get_function_definition(session, func_id)
+    if not func:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Function definition not found: {func_id}"
+        )
+    return func
+
+
+@router.put("/functions/{func_id}", response_model=FunctionDefinitionRead)
+def update_function_definition(
+    func_id: str,
+    data: FunctionDefinitionUpdate,
+    session: Session = Depends(get_session)
+):
+    """Update an existing function definition."""
+    func = meta_crud.update_function_definition(session, func_id, data)
+    if not func:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Function definition not found: {func_id}"
+        )
+    return func
+
+
+@router.delete("/functions/{func_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_function_definition(
+    func_id: str,
+    session: Session = Depends(get_session)
+):
+    """Delete a function definition."""
+    success = meta_crud.delete_function_definition(session, func_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Function definition not found: {func_id}"
+        )
+    return None
+
+
 # ==========================================
 # Action Execution
 # ==========================================
@@ -511,6 +622,7 @@ class ActionExecuteRequest(BaseModel):
     """Request body for action execution."""
     params: Dict[str, Any] = {}
     project_id: Optional[str] = "default-project"
+    source_id: Optional[str] = None  # When provided, backend builds context with source object (V1 compatibility)
 
 
 class ActionExecuteResponse(BaseModel):
@@ -585,6 +697,21 @@ def execute_action(
     logger.info(f"Executing action: {action_id}")
     logger.debug(f"Execution params: {request.params}")
     
+    # Build context: if source_id provided, fetch source object and build V1-style context
+    from app.engine import instance_crud
+    context = dict(request.params or {})
+    if request.source_id:
+        source_obj = instance_crud.get_object(session, request.source_id)
+        if source_obj:
+            context = {
+                "source": {
+                    "id": source_obj.id,
+                    "object_type_id": source_obj.object_type_id,
+                    "properties": source_obj.properties or {},
+                },
+                "params": request.params or {},
+            }
+    
     # Step 1: Get ActionDefinition
     action = session.get(ActionDefinition, action_id)
     if not action:
@@ -612,19 +739,22 @@ def execute_action(
     # Step 3: Execute the function code
     execution_result = execute_code_direct(
         code_content=function.code_content,
-        context=request.params,
+        context=context,
         session=session
     )
     
     execution_time_ms = int((time.time() - start_time) * 1000)
     
     # Step 4: Log execution to sys_action_log
+    input_params = dict(request.params or {})
+    if request.source_id:
+        input_params["source_id"] = request.source_id
     execution_log = ExecutionLog(
         id=log_id,
         project_id=request.project_id or "default-project",
         action_def_id=action_id,
         trigger_user_id=None,  # Could be extracted from auth context
-        input_params=request.params,
+        input_params=input_params,
         execution_status="SUCCESS" if execution_result.success else "FAILED",
         error_message=execution_result.error_message,
         duration_ms=execution_time_ms,

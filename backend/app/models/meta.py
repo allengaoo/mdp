@@ -61,6 +61,7 @@ class FunctionDefinition(SQLModel, table=True):
     description: Optional[str] = Field(default=None, max_length=500)
     input_params_schema: Optional[List[Dict[str, Any]]] = Field(default=None, sa_column=Column(JSON))
     output_type: str = Field(default="VOID", max_length=50)
+    project_id: Optional[str] = Field(default=None, foreign_key="meta_project.id", max_length=36)
 
 
 class ActionDefinition(SQLModel, table=True):
@@ -73,6 +74,7 @@ class ActionDefinition(SQLModel, table=True):
     description: Optional[str] = Field(default=None, max_length=500)
     operation_type: Optional[str] = Field(default=None, max_length=50)
     target_object_type_id: Optional[str] = Field(default=None, foreign_key="meta_object_type.id", max_length=36)
+    link_type_id: Optional[str] = Field(default=None, foreign_key="meta_link_type.id", max_length=64)
     parameters_schema: Optional[List[Dict[str, Any]]] = Field(default=None, sa_column=Column(JSON))
     property_mapping: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
     validation_rules: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
@@ -234,6 +236,7 @@ class FunctionDefinitionCreate(SQLModel):
     description: Optional[str] = Field(default=None, max_length=500)
     input_params_schema: Optional[List[Dict[str, Any]]] = None
     output_type: str = Field(default="VOID", max_length=50)
+    project_id: Optional[str] = Field(default=None, max_length=36)
 
 
 class FunctionDefinitionUpdate(SQLModel):
@@ -244,6 +247,7 @@ class FunctionDefinitionUpdate(SQLModel):
     bound_object_type_id: Optional[str] = Field(default=None, max_length=36)
     input_params_schema: Optional[List[Dict[str, Any]]] = None
     output_type: Optional[str] = Field(default=None, max_length=50)
+    project_id: Optional[str] = Field(default=None, max_length=36)
 
 
 class FunctionDefinitionRead(SQLModel):
@@ -256,6 +260,7 @@ class FunctionDefinitionRead(SQLModel):
     description: Optional[str]
     input_params_schema: Optional[List[Dict[str, Any]]]
     output_type: str
+    project_id: Optional[str] = None
 
 
 # ==========================================
@@ -269,6 +274,7 @@ class ActionDefinitionCreate(SQLModel):
     description: Optional[str] = Field(default=None, max_length=500)
     operation_type: Optional[str] = Field(default=None, max_length=50)
     target_object_type_id: Optional[str] = Field(default=None, max_length=36)
+    link_type_id: Optional[str] = Field(default=None, max_length=64)
     parameters_schema: Optional[List[Dict[str, Any]]] = None
     property_mapping: Optional[Dict[str, Any]] = None
     validation_rules: Optional[Dict[str, Any]] = None
@@ -282,6 +288,7 @@ class ActionDefinitionUpdate(SQLModel):
     description: Optional[str] = Field(default=None, max_length=500)
     operation_type: Optional[str] = Field(default=None, max_length=50)
     target_object_type_id: Optional[str] = Field(default=None, max_length=36)
+    link_type_id: Optional[str] = Field(default=None, max_length=64)
     parameters_schema: Optional[List[Dict[str, Any]]] = None
     property_mapping: Optional[Dict[str, Any]] = None
     validation_rules: Optional[Dict[str, Any]] = None
@@ -297,6 +304,7 @@ class ActionDefinitionRead(SQLModel):
     description: Optional[str] = None
     operation_type: Optional[str] = None
     target_object_type_id: Optional[str] = None
+    link_type_id: Optional[str] = None
     parameters_schema: Optional[List[Dict[str, Any]]] = None
     property_mapping: Optional[Dict[str, Any]] = None
     validation_rules: Optional[Dict[str, Any]] = None
@@ -316,7 +324,7 @@ class ActionDefWithFunction(SQLModel):
     id: str
     api_name: str
     display_name: str
-    backing_function_id: str
+    backing_function_id: Optional[str] = None  # Now optional since not all actions have a bound function
     # Resolved from FunctionDefinition JOIN
     function_api_name: Optional[str] = None
     function_display_name: Optional[str] = None

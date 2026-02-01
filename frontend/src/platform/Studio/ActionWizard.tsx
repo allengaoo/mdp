@@ -34,10 +34,17 @@ import { useParams } from 'react-router-dom';
 import { 
   fetchProjectObjectTypes, 
   fetchObjectTypeProperties,
-  fetchObjectTypes as fetchAllObjectTypes
+  fetchObjectTypes as fetchAllObjectTypes,
+  fetchLinkTypes,
+  fetchProjectLinkTypes,
 } from '../../api/v3/ontology';
-import { IV3ObjectTypeFull } from '../../api/v3/types';
-import { createActionDefinition, IActionDefinitionCreate } from '../../api/v3/logic';
+import { IV3ObjectTypeFull, IV3LinkTypeFull } from '../../api/v3/types';
+import { 
+  createActionDefinition, 
+  IActionDefinitionCreate, 
+  fetchFunctionsForList,
+  IFunctionDef,
+} from '../../api/v3/logic';
 
 const { TextArea } = Input;
 const { Step } = Steps;
@@ -93,6 +100,10 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
   const [objectTypes, setObjectTypes] = useState<ObjectTypeData[]>([]);
   const [selectedObjectType, setSelectedObjectType] = useState<ObjectTypeData | null>(null);
   const [objectProperties, setObjectProperties] = useState<ObjectProperty[]>([]);
+  const [linkTypes, setLinkTypes] = useState<IV3LinkTypeFull[]>([]);
+  const [selectedLinkType, setSelectedLinkType] = useState<IV3LinkTypeFull | null>(null);
+  const [functions, setFunctions] = useState<IFunctionDef[]>([]);
+  const [selectedFunction, setSelectedFunction] = useState<IFunctionDef | null>(null);
   const [parameters, setParameters] = useState<Parameter[]>([]);
   const [propertyMappings, setPropertyMappings] = useState<PropertyMapping[]>([]);
   const [validationRules, setValidationRules] = useState<{
@@ -129,6 +140,45 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
       loadObjectTypes();
     }
   }, [visible, projectId]);
+
+  // Fetch link types - for link_objects/unlink_objects operations
+  useEffect(() => {
+    const loadLinkTypes = async () => {
+      try {
+        if (projectId) {
+          // Ontology Studio context: fetch project-related link types only
+          const data = await fetchProjectLinkTypes(projectId);
+          setLinkTypes(data);
+        } else {
+          // Global context (Actions & Logic): fetch all link types
+          const data = await fetchLinkTypes();
+          setLinkTypes(data);
+        }
+      } catch (error) {
+        console.error('Failed to fetch link types:', error);
+        setLinkTypes([]);
+      }
+    };
+    if (visible) {
+      loadLinkTypes();
+    }
+  }, [visible, projectId]);
+
+  // Fetch functions - for function_logic operation
+  useEffect(() => {
+    const loadFunctions = async () => {
+      try {
+        const data = await fetchFunctionsForList();
+        setFunctions(data);
+      } catch (error) {
+        console.error('Failed to fetch functions:', error);
+        setFunctions([]);
+      }
+    };
+    if (visible) {
+      loadFunctions();
+    }
+  }, [visible]);
 
   // Fetch object properties when object type is selected - use V3 API
   const loadObjectProperties = async (objectTypeId: string) => {
@@ -171,8 +221,29 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
           return;
         }
       } else if (currentStep === 2) {
-        // Validate parameters
-        if (parameters.length === 0) {
+        // Validate based on operation type
+        if (selectedOperationType === 'update_property') {
+          // update_property requires property mapping
+          if (propertyMappings.length === 0) {
+            message.error('Please add at least one property mapping for update_property action');
+            return;
+          }
+        } else if (showLinkTypeSelection) {
+          // link_objects/unlink_objects require link type selection
+          if (!selectedLinkType) {
+            message.error('Please select a link type');
+            return;
+          }
+        } else if (showFunctionSelection) {
+          // function_logic requires backing function
+          if (!selectedFunction) {
+            message.error('Please select a backing function');
+            return;
+          }
+        }
+        
+        // General parameter validation (except for link operations which auto-generate)
+        if (parameters.length === 0 && !showLinkTypeSelection) {
           message.warning('No parameters defined. You can add parameters or continue.');
         }
       }
@@ -199,7 +270,19 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
         description: values.description || undefined,
         operation_type: selectedOperationType || undefined,
         target_object_type_id: values.target_object_type_id || undefined,
-        parameters_schema: parameters.length > 0 ? parameters : undefined,
+        // Add link_type_id for link_objects/unlink_objects operations
+        link_type_id: showLinkTypeSelection && selectedLinkType ? selectedLinkType.id : undefined,
+        // Add backing_function_id for function_logic operations
+        backing_function_id: showFunctionSelection && selectedFunction ? selectedFunction.id : undefined,
+        // Convert parameters to API format (data_type -> type)
+        parameters_schema: parameters.length > 0 
+          ? parameters.map(p => ({
+              api_id: p.api_id,
+              display_name: p.display_name,
+              type: p.data_type,
+              required: p.required,
+            }))
+          : undefined,
         property_mapping: propertyMappings.length > 0 
           ? propertyMappings.reduce((acc, m) => {
               acc[m.param_key] = m.property_key;
@@ -237,6 +320,8 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
     setSelectedOperationType('');
     setSelectedObjectType(null);
     setObjectProperties([]);
+    setSelectedLinkType(null);
+    setSelectedFunction(null);
     setParameters([]);
     setPropertyMappings([]);
     setValidationRules({
@@ -333,6 +418,48 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
   // Check if property mapping should be shown
   const showPropertyMapping =
     selectedObjectType && selectedOperationType === 'update_property';
+
+  // Check if link type selection should be shown
+  const showLinkTypeSelection =
+    selectedOperationType === 'link_objects' || selectedOperationType === 'unlink_objects';
+
+  // Check if function selection should be shown
+  const showFunctionSelection = selectedOperationType === 'function_logic';
+
+  // Handle function selection
+  const handleFunctionChange = (functionId: string) => {
+    const func = functions.find((f) => f.id === functionId);
+    setSelectedFunction(func || null);
+    // Note: Parameters can be manually defined for function_logic
+    // We don't auto-generate from function schema here
+  };
+
+  // Handle link type selection - auto-generate parameters
+  const handleLinkTypeChange = (linkTypeId: string) => {
+    const linkType = linkTypes.find((lt) => lt.id === linkTypeId);
+    setSelectedLinkType(linkType || null);
+    
+    if (linkType) {
+      // Auto-generate source_object_id and target_object_id parameters
+      const sourceTypeName = objectTypes.find(ot => ot.id === linkType.source_object_def_id)?.display_name || 'Source';
+      const targetTypeName = objectTypes.find(ot => ot.id === linkType.target_object_def_id)?.display_name || 'Target';
+      
+      setParameters([
+        {
+          display_name: `${sourceTypeName} ID`,
+          api_id: 'source_object_id',
+          data_type: 'object_ref',
+          required: true,
+        },
+        {
+          display_name: `${targetTypeName} ID`,
+          api_id: 'target_object_id',
+          data_type: 'object_ref',
+          required: true,
+        },
+      ]);
+    }
+  };
 
   const paramColumns = [
     {
@@ -562,19 +689,126 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
 
         {/* Step 3: Parameters & Mapping - use CSS hiding */}
         <div style={{ display: currentStep === 2 ? 'block' : 'none' }}>
+            {/* Link Type Selection - for link_objects/unlink_objects */}
+            {showLinkTypeSelection && (
+              <div style={{ marginBottom: 24 }}>
+                <h4>Link Type Selection</h4>
+                <p style={{ color: '#8c8c8c', marginBottom: 16 }}>
+                  {selectedOperationType === 'link_objects' 
+                    ? 'Select the link type to create relationships between objects.'
+                    : 'Select the link type to remove relationships between objects.'}
+                </p>
+                <Select
+                  placeholder="Select Link Type"
+                  value={selectedLinkType?.id}
+                  onChange={handleLinkTypeChange}
+                  style={{ width: '100%', marginBottom: 16 }}
+                >
+                  {linkTypes.map((lt) => {
+                    const sourceType = objectTypes.find(ot => ot.id === lt.source_object_def_id);
+                    const targetType = objectTypes.find(ot => ot.id === lt.target_object_def_id);
+                    return (
+                      <Select.Option key={lt.id} value={lt.id}>
+                        {lt.display_name} ({sourceType?.display_name || lt.source_type_name || 'Unknown'} → {targetType?.display_name || lt.target_type_name || 'Unknown'})
+                      </Select.Option>
+                    );
+                  })}
+                </Select>
+                
+                {selectedLinkType && (
+                  <Card size="small" style={{ background: '#f6f8fa' }}>
+                    <p><strong>Source Object Type:</strong> {objectTypes.find(ot => ot.id === selectedLinkType.source_object_def_id)?.display_name || selectedLinkType.source_type_name || 'Unknown'}</p>
+                    <p><strong>Target Object Type:</strong> {objectTypes.find(ot => ot.id === selectedLinkType.target_object_def_id)?.display_name || selectedLinkType.target_type_name || 'Unknown'}</p>
+                    <p>
+                      <strong>Cardinality:</strong>{' '}
+                      <span style={{ 
+                        color: selectedLinkType.cardinality === 'MANY_TO_MANY' ? '#722ed1' : '#1890ff',
+                        fontWeight: 500 
+                      }}>
+                        {selectedLinkType.cardinality || 'N/A'}
+                      </span>
+                    </p>
+                    {selectedLinkType.cardinality === 'MANY_TO_MANY' && (
+                      <p style={{ color: '#722ed1', marginTop: 8, fontSize: 12 }}>
+                        <strong>M:N Relation:</strong> Uses join table with keys:{' '}
+                        <code style={{ background: '#f0e6ff', padding: '2px 4px', borderRadius: 3 }}>
+                          {selectedLinkType.source_key_column || 'source_key'}
+                        </code>
+                        {' ↔ '}
+                        <code style={{ background: '#f0e6ff', padding: '2px 4px', borderRadius: 3 }}>
+                          {selectedLinkType.target_key_column || 'target_key'}
+                        </code>
+                      </p>
+                    )}
+                  </Card>
+                )}
+              </div>
+            )}
+
+            {/* Function Selection - for function_logic */}
+            {showFunctionSelection && (
+              <div style={{ marginBottom: 24 }}>
+                <h4>Backing Function</h4>
+                <p style={{ color: '#8c8c8c', marginBottom: 16 }}>
+                  Select the function that will be executed when this action is triggered.
+                </p>
+                <Select
+                  placeholder="Select Function"
+                  value={selectedFunction?.id}
+                  onChange={handleFunctionChange}
+                  style={{ width: '100%', marginBottom: 16 }}
+                  showSearch
+                  optionFilterProp="children"
+                >
+                  {functions.map((fn) => (
+                    <Select.Option key={fn.id} value={fn.id}>
+                      {fn.display_name} ({fn.api_name})
+                    </Select.Option>
+                  ))}
+                </Select>
+                
+                {selectedFunction && (
+                  <Card size="small" style={{ background: '#f6f8fa' }}>
+                    <p><strong>API Name:</strong> <code style={{ background: '#e8e8e8', padding: '2px 6px', borderRadius: 4 }}>{selectedFunction.api_name}</code></p>
+                    <p><strong>Output Type:</strong> {selectedFunction.output_type}</p>
+                    {selectedFunction.description && (
+                      <p><strong>Description:</strong> {selectedFunction.description}</p>
+                    )}
+                  </Card>
+                )}
+                
+                {!selectedFunction && (
+                  <p style={{ color: '#faad14', marginTop: 8 }}>
+                    Please select a backing function to continue.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Parameter Definitions */}
             <div style={{ marginBottom: 24 }}>
               <h4>Parameter Definitions</h4>
+              {showLinkTypeSelection && (
+                <p style={{ color: '#8c8c8c', marginBottom: 16 }}>
+                  Parameters are auto-generated based on the selected link type.
+                </p>
+              )}
+              {showFunctionSelection && (
+                <p style={{ color: '#8c8c8c', marginBottom: 16 }}>
+                  Define input parameters for the action. These will be passed to the backing function.
+                </p>
+              )}
               <Table
                 columns={paramColumns}
                 dataSource={parameters}
                 rowKey={(_, index) => `param-${index}`}
                 pagination={false}
                 size="small"
-                footer={() => (
+                footer={!showLinkTypeSelection ? () => (
                   <Button type="dashed" icon={<PlusOutlined />} onClick={addParameter} block>
                     Add Parameter
                   </Button>
-                )}
+                ) : undefined}
               />
             </div>
 
@@ -602,6 +836,13 @@ const ActionWizard: React.FC<ActionWizardProps> = ({ visible, onCancel, onSucces
                   )}
                 />
               </div>
+            )}
+
+            {/* Info message for link operations */}
+            {showLinkTypeSelection && !selectedLinkType && (
+              <p style={{ color: '#faad14', marginTop: 8 }}>
+                Please select a link type to continue.
+              </p>
             )}
         </div>
 

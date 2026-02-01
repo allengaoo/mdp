@@ -1,10 +1,7 @@
 /**
  * Function Definition Editor component.
  * Tabs layout for editing existing function definitions.
- * 支持真实的代码试运行功能。
- * 
- * @todo V3 Migration: This component still uses V1 API.
- * Migrate to V3 when backend Function endpoints are implemented.
+ * Uses V3 API. Supports code test run.
  */
 import React, { useState, useEffect } from 'react';
 import {
@@ -34,6 +31,7 @@ import {
   LoadingOutlined,
   CodeOutlined,
 } from '@ant-design/icons';
+import { updateFunction } from '../../api/v3/logic';
 import apiClient from '../../api/axios';
 import { useParams } from 'react-router-dom';
 
@@ -164,17 +162,16 @@ const FunctionEditor: React.FC<FunctionEditorProps> = ({
     try {
       const values = form.getFieldsValue();
 
-      // Construct payload
-      const payload: any = {
+      const payload = {
         display_name: values.display_name,
-        description: values.description || '',
-        code_content: codeContent,
-        input_params_schema: parameters.length > 0 ? parameters : null,
+        description: values.description || undefined,
+        code_content: codeContent || undefined,
+        input_params_schema: parameters.length > 0 ? parameters : undefined,
         output_type: outputType,
         bound_object_type_id: values.bound_object_type_id || null,
       };
 
-      await apiClient.put(`/meta/functions/${funcData.id}`, payload);
+      await updateFunction(funcData.id, payload);
       message.success('Function definition updated successfully');
       onSuccess();
     } catch (error: any) {

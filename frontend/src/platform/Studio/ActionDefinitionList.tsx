@@ -1,43 +1,22 @@
 /**
  * Action Definition List View component.
  * 
- * @todo V3 Migration: This component still uses V1 API.
- * Migrate to V3 when backend Action endpoints are implemented.
+ * Uses V3 API for action management.
  */
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Space, Tag, Modal, message, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { EditOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { useParams } from 'react-router-dom';
-import apiClient from '../../api/axios';
+import { fetchActions, deleteActionDefinition, IActionDefinitionRead } from '../../api/v3/logic';
+import { fetchProjectObjectTypes } from '../../api/v3/ontology';
 import ActionWizard from './ActionWizard';
 import ActionEditor from './ActionEditor';
 
 const { Text } = Typography;
 
-interface ActionDefinitionData {
-  id: string;
-  api_name: string;
-  display_name: string;
-  description?: string;
-  backing_function_id?: string;
-  target_object_type_id?: string | null;
-  operation_type?: string;
-  parameters_schema?: Array<{
-    name: string;
-    api_id: string;
-    data_type: string;
-    required: boolean;
-  }>;
-  property_mapping?: Record<string, string>;
-  validation_rules?: {
-    param_validation?: Array<{ expression: string; error_message: string }>;
-    pre_condition?: Array<{ expression: string; error_message: string }>;
-    post_condition?: Array<{ expression: string; error_message: string }>;
-  };
-  created_at?: string;
-  updated_at?: string;
-}
+// Use the V3 API type
+type ActionDefinitionData = IActionDefinitionRead;
 
 interface ObjectTypeData {
   id: string;
@@ -53,16 +32,12 @@ const ActionDefinitionList: React.FC = () => {
   const [editorVisible, setEditorVisible] = useState(false);
   const [selectedAction, setSelectedAction] = useState<ActionDefinitionData | null>(null);
 
-  // Fetch action definitions from API
-  const fetchActions = async () => {
+  // Fetch action definitions from V3 API
+  const loadActions = async () => {
     try {
       setLoading(true);
-      const response = await apiClient.get('/meta/action-definitions', {
-        params: {
-          limit: 100,
-        },
-      });
-      setData(response.data || []);
+      const actions = await fetchActions(projectId);
+      setData(actions);
     } catch (error: any) {
       message.error(error.response?.data?.detail || 'Failed to fetch action definitions');
       setData([]);
@@ -71,23 +46,21 @@ const ActionDefinitionList: React.FC = () => {
     }
   };
 
-  // Fetch object types for display
-  const fetchObjectTypes = async () => {
+  // Fetch object types for display using V3 API
+  const loadObjectTypes = async () => {
     try {
-      const response = await apiClient.get('/meta/object-types', {
-        params: {
-          limit: 100,
-        },
-      });
-      setObjectTypes(response.data || []);
+      if (projectId) {
+        const types = await fetchProjectObjectTypes(projectId);
+        setObjectTypes(types);
+      }
     } catch (error: any) {
       console.error('Failed to fetch object types:', error);
     }
   };
 
   useEffect(() => {
-    fetchActions();
-    fetchObjectTypes();
+    loadActions();
+    loadObjectTypes();
   }, [projectId]);
 
   // Get object type name
@@ -115,7 +88,8 @@ const ActionDefinitionList: React.FC = () => {
 
   // Handle create success
   const handleCreateSuccess = () => {
-    fetchActions();
+    setWizardVisible(false);
+    loadActions();
   };
 
   // Handle edit
@@ -126,10 +100,10 @@ const ActionDefinitionList: React.FC = () => {
 
   // Handle edit success
   const handleEditSuccess = () => {
-    fetchActions();
+    loadActions();
   };
 
-  // Handle delete
+  // Handle delete using V3 API
   const handleDelete = (record: ActionDefinitionData) => {
     Modal.confirm({
       title: 'Delete Action Definition',
@@ -139,9 +113,9 @@ const ActionDefinitionList: React.FC = () => {
       cancelText: 'Cancel',
       onOk: async () => {
         try {
-          await apiClient.delete(`/meta/action-definitions/${record.id}`);
+          await deleteActionDefinition(record.id);
           message.success('Action definition deleted successfully');
-          fetchActions();
+          loadActions();
         } catch (error: any) {
           message.error(error.response?.data?.detail || 'Failed to delete action definition');
         }

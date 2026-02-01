@@ -1,9 +1,7 @@
 /**
  * Function Definition Wizard component.
  * 3-step wizard for creating new function definitions.
- * 
- * @todo V3 Migration: This component still uses V1 API.
- * Migrate to V3 when backend Function endpoints are implemented.
+ * Uses V3 API. Supports projectId for Studio (project-scoped) vs OMA (global).
  */
 import React, { useState, useEffect } from 'react';
 import {
@@ -25,8 +23,9 @@ import {
   MinusCircleOutlined,
   PlayCircleOutlined,
 } from '@ant-design/icons';
-import apiClient from '../../api/axios';
 import { useParams } from 'react-router-dom';
+import { createFunction } from '../../api/v3/logic';
+import apiClient from '../../api/axios';
 
 const { TextArea } = Input;
 const { Step } = Steps;
@@ -36,6 +35,8 @@ interface FunctionWizardProps {
   visible: boolean;
   onCancel: () => void;
   onSuccess: () => void;
+  /** Project ID for Studio (project-scoped). OMA passes undefined for global. */
+  projectId?: string | null;
 }
 
 interface Parameter {
@@ -47,8 +48,10 @@ interface Parameter {
 const DATA_TYPES = ['string', 'number', 'integer', 'boolean', 'object', 'array', 'date'];
 const OUTPUT_TYPES = ['VOID', 'STRING', 'INTEGER', 'DOUBLE', 'BOOLEAN', 'OBJECT', 'OBJECT_REF', 'ARRAY'];
 
-const FunctionWizard: React.FC<FunctionWizardProps> = ({ visible, onCancel, onSuccess }) => {
-  const { projectId } = useParams<{ projectId: string }>();
+const FunctionWizard: React.FC<FunctionWizardProps> = ({ visible, onCancel, onSuccess, projectId: projectIdProp }) => {
+  const { projectId: projectIdFromRoute } = useParams<{ projectId: string }>();
+  // Prefer explicit prop (OMA passes undefined); fallback to route (Studio)
+  const projectId = projectIdProp !== undefined ? projectIdProp : projectIdFromRoute;
   const [form] = Form.useForm();
   const [currentStep, setCurrentStep] = useState(0);
   const [parameters, setParameters] = useState<Parameter[]>([]);
@@ -153,18 +156,18 @@ const FunctionWizard: React.FC<FunctionWizardProps> = ({ visible, onCancel, onSu
     try {
       const values = form.getFieldsValue();
       
-      // Construct payload
-      const payload: any = {
+      const payload = {
         api_name: values.api_name,
         display_name: values.display_name,
-        description: values.description || '',
-        code_content: codeContent,
-        input_params_schema: parameters.length > 0 ? parameters : null,
+        description: values.description || undefined,
+        code_content: codeContent || undefined,
+        input_params_schema: parameters.length > 0 ? parameters : undefined,
         output_type: outputType,
         bound_object_type_id: values.bound_object_type_id || null,
+        project_id: projectId || null,
       };
 
-      await apiClient.post('/meta/functions', payload);
+      await createFunction(payload);
       message.success('Function definition created successfully');
       handleReset();
       onSuccess();
@@ -324,7 +327,7 @@ const FunctionWizard: React.FC<FunctionWizardProps> = ({ visible, onCancel, onSu
         <Step title="Implementation & Test" />
       </Steps>
 
-      <Form form={form} layout="vertical">
+      <Form form={form} layout="vertical" preserve={true}>
         {/* Step 1: Basic Info */}
         {currentStep === 0 && (
           <div>

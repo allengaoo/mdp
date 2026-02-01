@@ -1,10 +1,12 @@
 /**
  * Ontology Test component.
  * 3-column layout: Action Library | Orchestration Canvas | Monitor Panel
- * Connected to real backend APIs for action execution.
+ * Connected to V3 backend APIs for action execution.
+ * Project-scoped: uses projectId for actions and object types.
  */
 import React, { useState, useEffect, useCallback } from 'react';
-import { Card, Button, List, Tag, Typography, Space, Empty, Tooltip, Badge, Spin, message, Select } from 'antd';
+import { useParams } from 'react-router-dom';
+import { Card, Button, Tag, Typography, Space, Empty, Tooltip, Badge, Spin, message, Select, Collapse, Input, InputNumber, Switch } from 'antd';
 import {
   PlusOutlined,
   ReloadOutlined,
@@ -17,20 +19,15 @@ import {
   ThunderboltOutlined,
   TeamOutlined,
   LoadingOutlined,
-  CheckCircleOutlined,
-  CloseCircleOutlined,
+  EditOutlined,
 } from '@ant-design/icons';
-import {
-  fetchActionDefinitions,
-  fetchObjectTypes,
-  fetchObjectInstances,
-  executeAction,
-  IActionDefinition,
-  IObjectType,
-  IObjectInstance,
-} from '../../api/ontology';
+import { fetchActions, executeAction as executeActionV3, fetchActionDetails } from '../../api/v3/logic';
+import type { IParamSchema } from '../../api/v3/logic';
+import { fetchProjectObjectTypes } from '../../api/v3/ontology';
+import { adaptObjectTypesToV1 } from '../../api/v3/adapters';
+import { fetchObjectInstances, IObjectType, IObjectInstance } from '../../api/ontology';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 // OODA Category configuration
 const CATEGORY_CONFIG: Record<string, { color: string; bgColor: string; icon: React.ReactNode }> = {
@@ -64,7 +61,8 @@ interface ActionItem {
   id: string;
   api_name: string;
   display_name: string;
-  backing_function_id: string;
+  backing_function_id?: string;
+  target_object_type_id?: string;
   category: string;
 }
 
@@ -74,6 +72,8 @@ interface SelectedAction {
   actionApiName: string;
   actionName: string;
   category: string;
+  target_object_type_id?: string;
+  input_params_schema?: IParamSchema[] | null;
   params?: Record<string, unknown>;
 }
 
@@ -81,17 +81,14 @@ interface ExecutionLog {
   id: string;
   timestamp: Date;
   actionName: string;
-  status: 'pending' | 'running' | 'success' | 'failed';
+  status: 'waiting' | 'running' | 'success' | 'failed' | 'info';
   message?: string;
   result?: any;
 }
 
-interface SandboxState {
-  objectTypes: IObjectType[];
-  instances: Record<string, IObjectInstance[]>; // keyed by object_type api_name
-}
-
 const OntologyTest: React.FC = () => {
+  const { projectId } = useParams<{ projectId: string }>();
+
   // Action Library State
   const [actions, setActions] = useState<ActionItem[]>([]);
   const [actionsLoading, setActionsLoading] = useState<boolean>(true);
@@ -99,6 +96,7 @@ const OntologyTest: React.FC = () => {
   // Orchestration State
   const [selectedActions, setSelectedActions] = useState<SelectedAction[]>([]);
   const [isExecuting, setIsExecuting] = useState<boolean>(false);
+  const [currentExecutingIndex, setCurrentExecutingIndex] = useState<number>(-1);
 
   // Sandbox State
   const [objectTypes, setObjectTypes] = useState<IObjectType[]>([]);
@@ -109,13 +107,13 @@ const OntologyTest: React.FC = () => {
   // Console Logs
   const [logs, setLogs] = useState<ExecutionLog[]>([]);
 
-  // Load action definitions
+  // Load action definitions (project-scoped)
   useEffect(() => {
+    if (!projectId) return;
     const loadActions = async () => {
       setActionsLoading(true);
       try {
-        const data = await fetchActionDefinitions();
-        // Add category to each action
+        const data = await fetchActions(projectId);
         const actionsWithCategory = data.map((action) => ({
           ...action,
           category: inferCategory(action.api_name),
@@ -131,72 +129,102 @@ const OntologyTest: React.FC = () => {
       }
     };
     loadActions();
-  }, []);
+  }, [projectId]);
 
-  // Load object types and instances for sandbox
+  // Load object types for sandbox (project-scoped)
   useEffect(() => {
-    const loadSandboxData = async () => {
+    if (!projectId) return;
+    const loadObjectTypes = async () => {
+      try {
+        const v3Types = await fetchProjectObjectTypes(projectId);
+        const types = adaptObjectTypesToV1(v3Types);
+        setObjectTypes(types);
+        addLog('info', '对象类型加载完成', `${types.length} 种类型`);
+      } catch (error: any) {
+        console.error('Failed to load object types:', error);
+        addLog('error', '对象类型加载失败', error.message);
+      }
+    };
+    loadObjectTypes();
+  }, [projectId]);
+
+  // Load source object instances: 当前项目下所有对象类型的实例（行为作用在对象上，执行源从项目内任选）
+  useEffect(() => {
+    if (!projectId || objectTypes.length === 0) return;
+
+    const loadInstances = async () => {
       setSandboxLoading(true);
       try {
-        // Load object types
-        const types = await fetchObjectTypes();
-        setObjectTypes(types);
-
-        // Load instances for each type (limit to first 3 types for performance)
-        const typesToLoad = types.slice(0, 3);
         const instancesMap: Record<string, IObjectInstance[]> = {};
-
-        for (const type of typesToLoad) {
+        for (const type of objectTypes) {
           try {
             const instances = await fetchObjectInstances(type.api_name);
             if (instances.length > 0) {
-              instancesMap[type.api_name] = instances.slice(0, 5); // Limit to 5 per type
+              instancesMap[type.api_name] = instances.slice(0, 50);
             }
           } catch (e) {
             console.warn(`Failed to load instances for ${type.api_name}:`, e);
           }
         }
-
         setSandboxInstances(instancesMap);
 
-        // Auto-select first instance as source if available
-        const firstInstances = Object.values(instancesMap).flat();
-        if (firstInstances.length > 0 && !selectedSourceId) {
-          setSelectedSourceId(firstInstances[0].id);
-        }
+        setSelectedSourceId((prev) => {
+          const allInst = Object.values(instancesMap).flat();
+          if (allInst.length === 0) return '';
+          const stillValid = allInst.some((i) => i.id === prev);
+          return stillValid ? prev : allInst[0].id;
+        });
 
-        addLog('info', '沙箱数据加载完成', `${types.length} 种类型`);
+        const totalInst = Object.values(instancesMap).flat().length;
+        if (totalInst > 0) {
+          addLog('info', '执行源对象已刷新', `共 ${totalInst} 个实例（${Object.keys(instancesMap).length} 种类型）`);
+        }
       } catch (error: any) {
-        console.error('Failed to load sandbox data:', error);
-        addLog('error', '沙箱数据加载失败', error.message);
+        addLog('error', '执行源对象加载失败', error.message);
       } finally {
         setSandboxLoading(false);
       }
     };
-    loadSandboxData();
-  }, []);
+    loadInstances();
+  }, [projectId, objectTypes]);
 
   // Add log helper
-  const addLog = (type: 'info' | 'success' | 'error' | 'pending', title: string, detail?: string) => {
+  const addLog = (type: 'info' | 'success' | 'error' | 'waiting' | 'running', title: string, detail?: string) => {
+    const status: ExecutionLog['status'] = type === 'error' ? 'failed' : type === 'info' ? 'info' : type;
     const logEntry: ExecutionLog = {
       id: `log-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       timestamp: new Date(),
       actionName: title,
-      status: type === 'info' ? 'pending' : type,
+      status,
       message: detail,
     };
     setLogs((prev) => [...prev.slice(-50), logEntry]); // Keep last 50 logs
   };
 
   // Handle add action to orchestration
-  const handleAddAction = (action: ActionItem) => {
+  const handleAddAction = async (action: ActionItem) => {
+    let input_params_schema: IParamSchema[] | null = null;
+    try {
+      const details = await fetchActionDetails(action.id);
+      input_params_schema = details.input_params_schema || null;
+    } catch (e) {
+      console.warn('Failed to fetch action details:', e);
+    }
+    const defaultParams: Record<string, unknown> = {};
+    if (input_params_schema) {
+      input_params_schema.forEach((p) => {
+        if (p.default !== undefined) defaultParams[p.name] = p.default;
+      });
+    }
     const newAction: SelectedAction = {
       id: `step-${Date.now()}`,
       actionId: action.id,
       actionApiName: action.api_name,
       actionName: action.display_name,
       category: action.category,
-      params: {},
+      target_object_type_id: action.target_object_type_id,
+      input_params_schema,
+      params: defaultParams,
     };
     setSelectedActions([...selectedActions, newAction]);
     addLog('info', `添加行为: ${action.display_name}`, action.api_name);
@@ -209,6 +237,13 @@ const OntologyTest: React.FC = () => {
     if (action) {
       addLog('info', `移除行为: ${action.actionName}`);
     }
+  };
+
+  // Handle update action params
+  const handleUpdateParams = (actionId: string, params: Record<string, unknown>) => {
+    setSelectedActions((prev) =>
+      prev.map((a) => (a.id === actionId ? { ...a, params } : a))
+    );
   };
 
   // Handle reset orchestration
@@ -229,34 +264,50 @@ const OntologyTest: React.FC = () => {
       return;
     }
 
+    if (!projectId) {
+      message.warning('项目上下文缺失');
+      return;
+    }
+
     setIsExecuting(true);
+    setCurrentExecutingIndex(-1);
     addLog('info', '开始执行编排', `共 ${selectedActions.length} 个行为`);
 
     let successCount = 0;
     let failCount = 0;
 
-    for (const action of selectedActions) {
-      addLog('pending', `执行中: ${action.actionName}`, action.actionApiName);
+    for (let i = 0; i < selectedActions.length; i++) {
+      const action = selectedActions[i];
+      setCurrentExecutingIndex(i);
+      addLog('running', `执行中: ${action.actionName}`, action.actionApiName);
 
       try {
-        const result = await executeAction(action.actionApiName, selectedSourceId, action.params);
+        const result = await executeActionV3(action.actionId, {
+          params: action.params || {},
+          project_id: projectId,
+          source_id: selectedSourceId,
+        });
 
         if (result.success) {
           successCount++;
-          addLog('success', `✓ ${action.actionName}`, JSON.stringify(result.result).slice(0, 100));
+          const resultStr = typeof result.result === 'object'
+            ? JSON.stringify(result.result).slice(0, 120)
+            : String(result.result ?? '').slice(0, 120);
+          addLog('success', `✓ ${action.actionName}`, resultStr || undefined);
         } else {
           failCount++;
-          addLog('error', `✗ ${action.actionName}`, result.message || '执行失败');
+          addLog('error', `✗ ${action.actionName}`, result.error_message || '执行失败');
         }
       } catch (error: any) {
         failCount++;
-        addLog('error', `✗ ${action.actionName}`, error.response?.data?.detail || error.message);
+        const errMsg = error.response?.data?.detail || error.message;
+        addLog('error', `✗ ${action.actionName}`, errMsg);
       }
 
-      // Small delay between actions
       await new Promise((resolve) => setTimeout(resolve, 300));
     }
 
+    setCurrentExecutingIndex(-1);
     setIsExecuting(false);
     addLog(
       failCount === 0 ? 'success' : 'error',
@@ -265,30 +316,27 @@ const OntologyTest: React.FC = () => {
     );
     message.info(`执行完成: ${successCount} 成功, ${failCount} 失败`);
 
-    // Refresh sandbox data after execution
     refreshSandbox();
   };
 
-  // Refresh sandbox data
+  // Refresh source instances: 拉取当前项目下所有对象类型的实例
   const refreshSandbox = useCallback(async () => {
+    if (objectTypes.length === 0) return;
     setSandboxLoading(true);
     try {
       const instancesMap: Record<string, IObjectInstance[]> = {};
-      const typesToLoad = objectTypes.slice(0, 3);
-
-      for (const type of typesToLoad) {
+      for (const type of objectTypes) {
         try {
           const instances = await fetchObjectInstances(type.api_name);
           if (instances.length > 0) {
-            instancesMap[type.api_name] = instances.slice(0, 5);
+            instancesMap[type.api_name] = instances.slice(0, 50);
           }
         } catch (e) {
           console.warn(`Failed to refresh instances for ${type.api_name}:`, e);
         }
       }
-
       setSandboxInstances(instancesMap);
-      addLog('info', '沙箱状态已刷新');
+      addLog('info', '执行源对象已刷新', `共 ${Object.values(instancesMap).flat().length} 个实例`);
     } catch (error) {
       console.error('Failed to refresh sandbox:', error);
     } finally {
@@ -300,6 +348,14 @@ const OntologyTest: React.FC = () => {
   const allInstances = Object.entries(sandboxInstances).flatMap(([typeName, instances]) =>
     instances.map((inst) => ({ ...inst, typeName }))
   );
+
+  if (!projectId) {
+    return (
+      <div style={{ padding: 24, textAlign: 'center' }}>
+        <Empty description="请从项目进入本体测试" />
+      </div>
+    );
+  }
 
   return (
     <div
@@ -484,19 +540,26 @@ const OntologyTest: React.FC = () => {
           </Text>
           <Select
             style={{ width: '100%' }}
-            placeholder="选择源对象实例"
+            placeholder={selectedActions.length === 0 ? '请先添加行为到编排中' : '选择源对象实例'}
             value={selectedSourceId || undefined}
             onChange={setSelectedSourceId}
             loading={sandboxLoading}
             showSearch
             optionFilterProp="children"
+            disabled={selectedActions.length === 0}
+            notFoundContent={allInstances.length === 0 ? '暂无对象实例，请先同步数据' : null}
           >
             {allInstances.map((inst) => (
               <Select.Option key={inst.id} value={inst.id}>
-                [{inst.typeName}] {inst.properties?.callsign || inst.properties?.name || inst.id.slice(0, 8)}
+                [{inst.typeName}] {inst.properties?.callsign || inst.properties?.name || inst.properties?.id || inst.id.slice(0, 8)}
               </Select.Option>
             ))}
           </Select>
+          {allInstances.length === 0 && !sandboxLoading && (
+            <Text type="secondary" style={{ fontSize: 12, marginTop: 4, display: 'block' }}>
+              当前项目暂无对象实例，请先在数据连接中同步数据
+            </Text>
+          )}
         </div>
 
         <div
@@ -541,81 +604,171 @@ const OntologyTest: React.FC = () => {
               <Space direction="vertical" size={16} style={{ width: '100%' }}>
                 {selectedActions.map((action, index) => {
                   const config = CATEGORY_CONFIG[action.category] || CATEGORY_CONFIG.Default;
+                  const isRunning = isExecuting && currentExecutingIndex === index;
+                  const isCompleted = isExecuting && currentExecutingIndex > index;
+                  const hasParams = action.input_params_schema && action.input_params_schema.length > 0;
                   return (
                     <div
                       key={action.id}
                       style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 16,
                         padding: '16px 20px',
-                        background: '#fff',
+                        background: isRunning ? '#eff6ff' : isCompleted ? '#f0fdf4' : '#fff',
                         borderRadius: 10,
-                        border: '1px solid #e5e7eb',
-                        boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
+                        border: isRunning ? `2px solid ${config.color}` : '1px solid #e5e7eb',
+                        boxShadow: isRunning ? `0 4px 16px ${config.color}40` : '0 2px 8px rgba(0,0,0,0.04)',
                         transition: 'all 0.2s ease',
                       }}
                       onMouseEnter={(e) => {
-                        e.currentTarget.style.boxShadow = '0 4px 16px rgba(0,0,0,0.08)';
+                        if (!isExecuting) e.currentTarget.style.boxShadow = '0 4px 16px rgba(0,0,0,0.08)';
                       }}
                       onMouseLeave={(e) => {
-                        e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.04)';
+                        if (!isRunning) e.currentTarget.style.boxShadow = isCompleted ? '0 2px 8px rgba(0,0,0,0.04)' : '0 2px 8px rgba(0,0,0,0.04)';
                       }}
                     >
-                      {/* Step number */}
-                      <div
-                        style={{
-                          width: 36,
-                          height: 36,
-                          borderRadius: '50%',
-                          background: `linear-gradient(135deg, ${config.color} 0%, ${config.color}dd 100%)`,
-                          color: '#fff',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          fontWeight: 600,
-                          fontSize: 14,
-                          flexShrink: 0,
-                          boxShadow: `0 2px 8px ${config.color}40`,
-                        }}
-                      >
-                        {index + 1}
-                      </div>
-
-                      {/* Action info */}
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                          <Text strong style={{ fontSize: 14 }}>
-                            {action.actionName}
-                          </Text>
-                          <Tag
-                            style={{
-                              color: config.color,
-                              background: config.bgColor,
-                              border: 'none',
-                              borderRadius: 4,
-                              fontSize: 11,
-                            }}
-                          >
-                            {action.category}
-                          </Tag>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                        {/* Step number */}
+                        <div
+                          style={{
+                            width: 36,
+                            height: 36,
+                            borderRadius: '50%',
+                            background: isRunning
+                              ? `linear-gradient(135deg, #1677ff 0%, #1677ff 100%)`
+                              : isCompleted
+                                ? `linear-gradient(135deg, #10b981 0%, #10b981dd 100%)`
+                                : `linear-gradient(135deg, ${config.color} 0%, ${config.color}dd 100%)`,
+                            color: '#fff',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontWeight: 600,
+                            fontSize: 14,
+                            flexShrink: 0,
+                            boxShadow: isRunning ? '0 2px 12px #1677ff80' : `0 2px 8px ${config.color}40`,
+                            animation: isRunning ? 'pulse 1s infinite' : undefined,
+                          }}
+                        >
+                          {isCompleted ? '✓' : index + 1}
                         </div>
-                        <Text type="secondary" style={{ fontSize: 12 }}>
-                          {action.actionApiName}
-                        </Text>
+
+                        {/* Action info */}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                            <Text strong style={{ fontSize: 14 }}>
+                              {action.actionName}
+                            </Text>
+                            <Tag
+                              style={{
+                                color: config.color,
+                                background: config.bgColor,
+                                border: 'none',
+                                borderRadius: 4,
+                                fontSize: 11,
+                              }}
+                            >
+                              {action.category}
+                            </Tag>
+                          </div>
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            {action.actionApiName}
+                          </Text>
+                        </div>
+
+                        {/* Delete button */}
+                        <Tooltip title="移除">
+                          <Button
+                            type="text"
+                            danger
+                            icon={<DeleteOutlined />}
+                            onClick={() => handleRemoveAction(action.id)}
+                            disabled={isExecuting}
+                            style={{ borderRadius: 6 }}
+                          />
+                        </Tooltip>
                       </div>
 
-                      {/* Delete button */}
-                      <Tooltip title="移除">
-                        <Button
-                          type="text"
-                          danger
-                          icon={<DeleteOutlined />}
-                          onClick={() => handleRemoveAction(action.id)}
-                          disabled={isExecuting}
-                          style={{ borderRadius: 6 }}
+                      {/* Collapsible params form */}
+                      {hasParams && (
+                        <Collapse
+                          ghost
+                          style={{ marginTop: 12, background: 'transparent' }}
+                          items={[
+                            {
+                              key: 'params',
+                              label: (
+                                <Space>
+                                  <EditOutlined />
+                                  <span>参数配置</span>
+                                  {Object.keys(action.params || {}).length > 0 && (
+                                    <Tag color="blue" style={{ fontSize: 10 }}>
+                                      {Object.keys(action.params || {}).length} 项
+                                    </Tag>
+                                  )}
+                                </Space>
+                              ),
+                              children: (
+                                <div style={{ padding: '8px 0' }}>
+                                  {(action.input_params_schema || []).map((param) => {
+                                    const value = (action.params || {})[param.name];
+                                    const renderField = () => {
+                                      const pType = String(param.type || 'string').toLowerCase();
+                                      if (pType === 'number') {
+                                        return (
+                                          <InputNumber
+                                            style={{ width: '100%' }}
+                                            value={value as number | undefined}
+                                            onChange={(v) =>
+                                              handleUpdateParams(action.id, {
+                                                ...action.params,
+                                                [param.name]: v ?? param.default,
+                                              })
+                                            }
+                                            placeholder={param.description || param.name}
+                                          />
+                                        );
+                                      }
+                                      if (pType === 'boolean') {
+                                        return (
+                                          <Switch
+                                            checked={!!value}
+                                            onChange={(v) =>
+                                              handleUpdateParams(action.id, {
+                                                ...action.params,
+                                                [param.name]: v,
+                                              })
+                                            }
+                                          />
+                                        );
+                                      }
+                                      return (
+                                        <Input
+                                          value={(value ?? param.default ?? '') as string}
+                                          onChange={(e) =>
+                                            handleUpdateParams(action.id, {
+                                              ...action.params,
+                                              [param.name]: e.target.value,
+                                            })
+                                          }
+                                          placeholder={param.description || param.name}
+                                        />
+                                      );
+                                    };
+                                    return (
+                                      <div key={param.name} style={{ marginBottom: 12 }}>
+                                        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
+                                          {param.name}
+                                          {param.required && <span style={{ color: '#ff4d4f' }}> *</span>}
+                                        </Text>
+                                        {renderField()}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              ),
+                            },
+                          ]}
                         />
-                      </Tooltip>
+                      )}
                     </div>
                   );
                 })}
@@ -702,14 +855,22 @@ const OntologyTest: React.FC = () => {
                   color = '#4ec9b0';
                   prefix = '[OK]';
                   prefixColor = '#10b981';
-                } else if (log.status === 'error' || log.status === 'failed') {
+                } else if (log.status === 'failed') {
                   color = '#ff6b6b';
                   prefix = '[ERR]';
                   prefixColor = '#ef4444';
-                } else if (log.status === 'running' || log.status === 'pending') {
+                } else if (log.status === 'running') {
                   color = '#dcdcaa';
                   prefix = '[RUN]';
                   prefixColor = '#f59e0b';
+                } else if (log.status === 'waiting') {
+                  color = '#9ca3af';
+                  prefix = '[...]';
+                  prefixColor = '#6b7280';
+                } else if (log.status === 'info') {
+                  color = '#4ec9b0';
+                  prefix = '[INFO]';
+                  prefixColor = '#6a9955';
                 }
 
                 return (
@@ -717,7 +878,7 @@ const OntologyTest: React.FC = () => {
                     <span style={{ color: prefixColor }}>{prefix}</span> {log.actionName}
                     {log.message && (
                       <span style={{ color: '#6a9955', marginLeft: 8, fontSize: 11 }}>
-                        ({log.message.slice(0, 50)})
+                        ({log.message.slice(0, 80)})
                       </span>
                     )}
                   </div>

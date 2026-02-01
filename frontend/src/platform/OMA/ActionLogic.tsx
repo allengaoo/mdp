@@ -40,13 +40,17 @@ import {
   fetchFunctionsForList,
   fetchActionDetails,
   executeAction,
+  getActionDefinition,
   IActionWithFunction,
   IFunctionDef,
   IActionDetails,
   IParamSchema,
   IActionExecuteResponse,
+  IActionDefinitionRead,
 } from '../../api/v3/logic';
 import ActionWizard from '../Studio/ActionWizard';
+import ActionEditor from '../Studio/ActionEditor';
+import FunctionWizard from '../Studio/FunctionWizard';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -302,9 +306,10 @@ interface ActionsTabProps {
   loading: boolean;
   searchText: string;
   onExecute: (action: IActionWithFunction) => void;
+  onEdit: (action: IActionWithFunction) => void;
 }
 
-const ActionsTab: React.FC<ActionsTabProps> = ({ actions, loading, searchText, onExecute }) => {
+const ActionsTab: React.FC<ActionsTabProps> = ({ actions, loading, searchText, onExecute, onEdit }) => {
   const filteredActions = actions.filter(
     (action) =>
       action.api_name.toLowerCase().includes(searchText.toLowerCase()) ||
@@ -371,7 +376,7 @@ const ActionsTab: React.FC<ActionsTabProps> = ({ actions, loading, searchText, o
           >
             执行
           </Button>
-          <Button type="link" size="small">
+          <Button type="link" size="small" onClick={() => onEdit(record)}>
             编辑
           </Button>
         </Space>
@@ -578,6 +583,12 @@ const ActionLogic: React.FC = () => {
   
   // Create Action Wizard state
   const [actionWizardVisible, setActionWizardVisible] = useState(false);
+  // Create Function Wizard state (OMA global - no project)
+  const [functionWizardVisible, setFunctionWizardVisible] = useState(false);
+  
+  // Edit Action state
+  const [editorVisible, setEditorVisible] = useState(false);
+  const [selectedActionForEdit, setSelectedActionForEdit] = useState<IActionDefinitionRead | null>(null);
 
   // Load data
   const loadData = useCallback(async () => {
@@ -615,6 +626,25 @@ const ActionLogic: React.FC = () => {
     setExecuteModalVisible(true);
   };
 
+  // Handle edit action
+  const handleEditAction = async (action: IActionWithFunction) => {
+    try {
+      // 获取完整的 action 数据
+      const fullAction = await getActionDefinition(action.id);
+      setSelectedActionForEdit(fullAction);
+      setEditorVisible(true);
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || '获取 Action 详情失败');
+    }
+  };
+
+  // Handle edit success
+  const handleEditSuccess = () => {
+    setEditorVisible(false);
+    setSelectedActionForEdit(null);
+    loadData(); // 刷新列表
+  };
+
   // Tab items
   const tabItems = [
     {
@@ -631,6 +661,7 @@ const ActionLogic: React.FC = () => {
           loading={loading}
           searchText={searchText}
           onExecute={handleExecuteAction}
+          onEdit={handleEditAction}
         />
       ),
     },
@@ -710,7 +741,11 @@ const ActionLogic: React.FC = () => {
             </Button>
           )}
           {activeTab === 'functions' && (
-            <Button type="primary" icon={<PlusOutlined />}>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => setFunctionWizardVisible(true)}
+            >
               新建 Function
             </Button>
           )}
@@ -760,6 +795,30 @@ const ActionLogic: React.FC = () => {
           loadData();
         }}
       />
+
+      {/* Create Function Wizard (OMA global - projectId undefined) */}
+      <FunctionWizard
+        visible={functionWizardVisible}
+        projectId={undefined}
+        onCancel={() => setFunctionWizardVisible(false)}
+        onSuccess={() => {
+          setFunctionWizardVisible(false);
+          loadData();
+        }}
+      />
+
+      {/* Edit Action Modal */}
+      {selectedActionForEdit && (
+        <ActionEditor
+          visible={editorVisible}
+          action={selectedActionForEdit}
+          onCancel={() => {
+            setEditorVisible(false);
+            setSelectedActionForEdit(null);
+          }}
+          onSuccess={handleEditSuccess}
+        />
+      )}
     </div>
   );
 };

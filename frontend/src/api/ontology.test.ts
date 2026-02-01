@@ -22,6 +22,7 @@ import apiClient from './axios';
 // Mock V3 API module (used by most functions now)
 vi.mock('./v3/ontology', () => ({
   fetchProjects: vi.fn(),
+  fetchProjectsWithStats: vi.fn(),
   fetchProjectById: vi.fn(),
   fetchObjectTypes: vi.fn(),
   fetchLinkTypes: vi.fn(),
@@ -52,7 +53,7 @@ describe('Ontology API', () => {
 
   describe('fetchProjects', () => {
     it('应该通过 V3 API 获取项目列表并适配为 V1 格式', async () => {
-      // V3 API 返回的数据格式
+      // V3 API 返回的数据格式 (fetchProjectsWithStats)
       const mockV3Projects = [
         {
           id: 'proj-1',
@@ -60,14 +61,16 @@ describe('Ontology API', () => {
           description: 'Test project',
           created_at: '2024-01-01T00:00:00Z',
           updated_at: '2024-01-01T00:00:00Z',
+          object_count: 0,
+          link_count: 0,
         },
       ];
 
-      vi.mocked(v3Api.fetchProjects).mockResolvedValueOnce(mockV3Projects);
+      vi.mocked(v3Api.fetchProjectsWithStats).mockResolvedValueOnce(mockV3Projects);
 
       const result = await fetchProjects();
 
-      expect(v3Api.fetchProjects).toHaveBeenCalledTimes(1);
+      expect(v3Api.fetchProjectsWithStats).toHaveBeenCalledTimes(1);
       // 验证适配后的 V1 格式
       expect(result).toEqual([
         {
@@ -83,7 +86,7 @@ describe('Ontology API', () => {
     });
 
     it('应该在 V3 API 返回空时返回空数组', async () => {
-      vi.mocked(v3Api.fetchProjects).mockResolvedValueOnce([]);
+      vi.mocked(v3Api.fetchProjectsWithStats).mockResolvedValueOnce([]);
 
       const result = await fetchProjects();
 
@@ -92,7 +95,7 @@ describe('Ontology API', () => {
 
     it('应该在 V3 API 失败时回退到 V1 API', async () => {
       const error = new Error('V3 API unavailable');
-      vi.mocked(v3Api.fetchProjects).mockRejectedValueOnce(error);
+      vi.mocked(v3Api.fetchProjectsWithStats).mockRejectedValueOnce(error);
 
       const mockV1Projects: IOntologyProject[] = [
         {

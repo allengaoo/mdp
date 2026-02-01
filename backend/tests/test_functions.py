@@ -85,3 +85,35 @@ class TestFunctionDefinitionAPI:
         delete_response = await client.delete(f"/api/v1/meta/functions/{data['id']}")
         assert delete_response.status_code == 204
         print("✅ Cleaned up test function")
+
+    @pytest.mark.asyncio
+    async def test_v3_create_and_delete_function(self, client: AsyncClient):
+        """Test V3 function CRUD: create, list, get, delete."""
+        unique_name = f"test_v3_func_{uuid.uuid4().hex[:8]}"
+
+        # Create
+        payload = {
+            "api_name": unique_name,
+            "display_name": f"V3 Test Function {unique_name}",
+            "code_content": "def main(): return 'ok'",
+            "output_type": "STRING",
+        }
+        cr = await client.post("/api/v3/ontology/functions", json=payload)
+        assert cr.status_code == 201, cr.text
+        data = cr.json()
+        fid = data["id"]
+        assert data["api_name"] == unique_name
+
+        # List
+        list_r = await client.get("/api/v3/ontology/functions")
+        assert list_r.status_code == 200
+        assert any(f["id"] == fid for f in list_r.json())
+
+        # Get
+        get_r = await client.get(f"/api/v3/ontology/functions/{fid}")
+        assert get_r.status_code == 200
+        assert get_r.json()["api_name"] == unique_name
+
+        # Delete
+        del_r = await client.delete(f"/api/v3/ontology/functions/{fid}")
+        assert del_r.status_code == 204

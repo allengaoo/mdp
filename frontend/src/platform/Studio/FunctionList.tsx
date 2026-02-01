@@ -1,15 +1,14 @@
 /**
  * Function Definition List View component.
- * 
- * @todo V3 Migration: This component still uses V1 API.
- * Migrate to V3 when backend Function endpoints are implemented.
+ * Uses V3 API. Project-scoped (Studio context).
  */
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Space, Tag, Modal, message, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { EditOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { useParams } from 'react-router-dom';
-import apiClient from '../../api/axios';
+import { fetchFunctions, deleteFunction } from '../../api/v3/logic';
+import { fetchProjectObjectTypes } from '../../api/v3/ontology';
 import FunctionWizard from './FunctionWizard';
 import FunctionEditor from './FunctionEditor';
 
@@ -46,16 +45,12 @@ const FunctionList: React.FC = () => {
   const [editorVisible, setEditorVisible] = useState(false);
   const [selectedFunction, setSelectedFunction] = useState<FunctionDefinitionData | null>(null);
 
-  // Fetch function definitions from API
-  const fetchFunctions = async () => {
+  // Fetch function definitions from V3 API (project-scoped)
+  const loadFunctions = async () => {
     try {
       setLoading(true);
-      const response = await apiClient.get('/meta/functions', {
-        params: {
-          limit: 100,
-        },
-      });
-      setData(response.data || []);
+      const list = await fetchFunctions(projectId ?? undefined);
+      setData(list);
     } catch (error: any) {
       message.error(error.response?.data?.detail || 'Failed to fetch function definitions');
       setData([]);
@@ -64,23 +59,23 @@ const FunctionList: React.FC = () => {
     }
   };
 
-  // Fetch object types for display
-  const fetchObjectTypes = async () => {
+  // Fetch object types for display (bound_object_type_id)
+  const loadObjectTypes = async () => {
+    if (!projectId) return;
     try {
-      const response = await apiClient.get('/meta/object-types', {
-        params: {
-          limit: 100,
-        },
-      });
-      setObjectTypes(response.data || []);
+      const types = await fetchProjectObjectTypes(projectId);
+      setObjectTypes(types.map((t: { id: string; display_name?: string }) => ({
+        id: t.id,
+        display_name: t.display_name || t.id,
+      })));
     } catch (error: any) {
       console.error('Failed to fetch object types:', error);
     }
   };
 
   useEffect(() => {
-    fetchFunctions();
-    fetchObjectTypes();
+    loadFunctions();
+    loadObjectTypes();
   }, [projectId]);
 
   // Get object type name
@@ -112,7 +107,7 @@ const FunctionList: React.FC = () => {
 
   // Handle create success
   const handleCreateSuccess = () => {
-    fetchFunctions();
+    loadFunctions();
   };
 
   // Handle edit
@@ -123,7 +118,7 @@ const FunctionList: React.FC = () => {
 
   // Handle edit success
   const handleEditSuccess = () => {
-    fetchFunctions();
+    loadFunctions();
   };
 
   // Handle delete
@@ -136,9 +131,9 @@ const FunctionList: React.FC = () => {
       cancelText: 'Cancel',
       onOk: async () => {
         try {
-          await apiClient.delete(`/meta/functions/${record.id}`);
+          await deleteFunction(record.id);
           message.success('Function definition deleted successfully');
-          fetchFunctions();
+          loadFunctions();
         } catch (error: any) {
           message.error(error.response?.data?.detail || 'Failed to delete function definition');
         }
@@ -224,6 +219,7 @@ const FunctionList: React.FC = () => {
 
       <FunctionWizard
         visible={wizardVisible}
+        projectId={projectId ?? undefined}
         onCancel={() => setWizardVisible(false)}
         onSuccess={handleCreateSuccess}
       />

@@ -61,3 +61,17 @@ logs/
 *.log
 !backend/logs/.gitkeep
 
+# Virtual environments
+.venv/
+backend/.venv/
+
+# Binary files
+bin/
+
+# MinIO data
+minio-data/
+
+# ChromaDB data
+data/chroma_vector_store/
+backend/data/chroma_vector_store/
+

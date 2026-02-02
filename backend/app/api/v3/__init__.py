@@ -14,6 +14,7 @@ from app.api.v3.search import router as search_router
 from app.api.v3.graph import router as graph_router
 from app.api.v3.object_views import router as object_views_router, objects_router
 from app.api.v3.chat import router as chat_router
+from app.api.v3.execute import router as execute_router
 
 # Main V3 router (prefix set in main.py as /api/v3)
 router = APIRouter(tags=["V3.1 API"])
@@ -30,5 +31,6 @@ router.include_router(graph_router)
 router.include_router(object_views_router)
 router.include_router(objects_router)
 router.include_router(chat_router)
+router.include_router(execute_router)
 
 __all__ = ["router"]

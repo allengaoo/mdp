@@ -25,7 +25,7 @@ import {
 } from '@ant-design/icons';
 import { useParams } from 'react-router-dom';
 import { createFunction } from '../../api/v3/logic';
-import apiClient from '../../api/axios';
+import v3Client from '../../api/v3/client';
 
 const { TextArea } = Input;
 const { Step } = Steps;
@@ -221,10 +221,9 @@ const FunctionWizard: React.FC<FunctionWizardProps> = ({ visible, onCancel, onSu
     setTestResult('');
 
     try {
-      const response = await apiClient.post('/execute/code/test', {
-        code: codeContent,
-        params: testInputs,
-        context: {}, // Empty context for testing
+      const response = await v3Client.post('/execute/code/test', {
+        code_content: codeContent,
+        context: testInputs, // params merged into context
       });
 
       const result = response.data;

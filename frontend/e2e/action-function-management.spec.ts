@@ -256,9 +256,9 @@ test.describe('Code Execution Integration', () => {
       await codeTab.click();
       await page.waitForTimeout(1000);
       
-      // 监听 API 请求
+      // 监听 API 请求 (V3 execute)
       const requestPromise = page.waitForRequest(
-        request => request.url().includes('/execute/') && request.method() === 'POST',
+        request => request.url().includes('/api/v3/execute/') && request.method() === 'POST',
         { timeout: 15000 }
       ).catch(() => null);
       
@@ -271,9 +271,9 @@ test.describe('Code Execution Integration', () => {
         if (request) {
           console.log('Code execution API called:', request.url());
           
-          // 等待响应
+          // 等待响应 (V3 execute)
           const responsePromise = page.waitForResponse(
-            response => response.url().includes('/execute/'),
+            response => response.url().includes('/api/v3/execute/'),
             { timeout: 10000 }
           ).catch(() => null);
           

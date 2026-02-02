@@ -193,7 +193,7 @@ GET /api/v1/execute/logs?action_id=xxx&object_id=xxx
 # 查询对象实例
 GET /api/v1/execute/objects/{type_api_name}?limit=100&offset=0
 
-# 测试代码
+# 测试代码 (V1 - 旧版)
 POST /api/v1/execute/code/test
 {
   "code": "print('hello')",
@@ -206,6 +206,49 @@ POST /api/v1/execute/code/validate
   "code": "print('hello')"
 }
 ```
+
+### 1.8 代码执行 API (V3 - 推荐)
+
+```http
+# 测试代码执行
+POST /api/v3/execute/code/test
+{
+  "code_content": "def main(context):\n    return context['x'] * 2",
+  "context": {"x": 21},
+  "executor_type": "auto",      # auto, builtin, subprocess, remote
+  "timeout_seconds": 30
+}
+
+# 响应
+{
+  "success": true,
+  "result": 42,
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 15,
+  "executor_used": "builtin",
+  "error_message": null,
+  "error_type": null,
+  "traceback": null
+}
+
+# 测试函数执行 (by ID)
+POST /api/v3/execute/function/{function_id}/test
+{
+  "context": {"x": 21},
+  "executor_type": "auto",
+  "timeout_seconds": 30
+}
+```
+
+**执行器类型说明：**
+
+| executor_type | 说明 | 适用场景 |
+|---------------|------|----------|
+| `auto` | 自动选择最佳执行器 | 默认推荐 |
+| `builtin` | 进程内执行，可访问数据库 | 简单代码，需要 DB 操作 |
+| `subprocess` | 子进程隔离执行 | numpy/pandas 等复杂计算 |
+| `remote` | 远程沙箱执行 (K8s) | 生产环境，安全隔离 |
 
 ---
 

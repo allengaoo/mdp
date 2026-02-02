@@ -26,6 +26,7 @@ class ExecutorType(str, Enum):
     """执行器类型"""
     BUILTIN = "builtin"
     SUBPROCESS = "subprocess"
+    REMOTE = "remote"  # 远程沙箱执行
     AUTO = "auto"
 
 
@@ -160,6 +161,111 @@ def choose_executor(code_content: str, has_session: bool) -> ExecutorType:
     return ExecutorType.BUILTIN
 
 
+def execute_in_sandbox(
+    code_content: str,
+    context: Dict[str, Any],
+    timeout_seconds: int = 30,
+    sandbox_url: Optional[str] = None
+) -> CodeExecutionResponse:
+    """
+    在远程沙箱服务中执行代码
+    
+    Args:
+        code_content: Python 代码
+        context: 执行上下文
+        timeout_seconds: 超时时间
+        sandbox_url: 沙箱服务 URL（默认从配置读取）
+        
+    Returns:
+        代码执行响应
+    """
+    import httpx
+    import time
+    from app.core.config import settings
+    
+    start_time = time.time()
+    url = sandbox_url or settings.sandbox_url
+    
+    logger.info(f"Executing code in remote sandbox: {url}")
+    
+    try:
+        with httpx.Client(timeout=timeout_seconds + 10) as client:
+            response = client.post(
+                f"{url}/execute",
+                json={
+                    "code_content": code_content,
+                    "context": context,
+                    "timeout_seconds": timeout_seconds
+                }
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            return CodeExecutionResponse(
+                success=data.get("success", False),
+                result=data.get("result"),
+                stdout=data.get("stdout", ""),
+                stderr=data.get("stderr", ""),
+                execution_time_ms=data.get("execution_time_ms", 0),
+                executor_used="remote",
+                error_message=data.get("error_message"),
+                error_type=data.get("error_type"),
+                traceback=data.get("traceback")
+            )
+    except httpx.TimeoutException:
+        execution_time_ms = int((time.time() - start_time) * 1000)
+        logger.warning(f"Sandbox request timed out after {timeout_seconds}s")
+        return CodeExecutionResponse(
+            success=False,
+            result=None,
+            stdout="",
+            stderr="",
+            execution_time_ms=execution_time_ms,
+            executor_used="remote",
+            error_message=f"Sandbox request timed out after {timeout_seconds} seconds",
+            error_type="TimeoutError"
+        )
+    except httpx.HTTPStatusError as e:
+        execution_time_ms = int((time.time() - start_time) * 1000)
+        logger.error(f"Sandbox HTTP error: {e}")
+        return CodeExecutionResponse(
+            success=False,
+            result=None,
+            stdout="",
+            stderr="",
+            execution_time_ms=execution_time_ms,
+            executor_used="remote",
+            error_message=f"Sandbox HTTP error: {e.response.status_code}",
+            error_type="HTTPError"
+        )
+    except httpx.ConnectError as e:
+        execution_time_ms = int((time.time() - start_time) * 1000)
+        logger.error(f"Cannot connect to sandbox: {e}")
+        return CodeExecutionResponse(
+            success=False,
+            result=None,
+            stdout="",
+            stderr="",
+            execution_time_ms=execution_time_ms,
+            executor_used="remote",
+            error_message=f"Cannot connect to sandbox service at {url}",
+            error_type="ConnectionError"
+        )
+    except Exception as e:
+        execution_time_ms = int((time.time() - start_time) * 1000)
+        logger.error(f"Sandbox execution failed: {e}")
+        return CodeExecutionResponse(
+            success=False,
+            result=None,
+            stdout="",
+            stderr="",
+            execution_time_ms=execution_time_ms,
+            executor_used="remote",
+            error_message=str(e),
+            error_type=type(e).__name__
+        )
+
+
 def execute_code(request: CodeExecutionRequest) -> CodeExecutionResponse:
     """
     执行代码的统一入口
@@ -211,7 +317,7 @@ def execute_code(request: CodeExecutionRequest) -> CodeExecutionResponse:
             traceback=result.traceback
         )
     
-    else:  # SUBPROCESS
+    elif executor_type == ExecutorType.SUBPROCESS:
         result = execute_in_subprocess(
             code_content=request.code_content,
             context=request.context,
@@ -227,6 +333,13 @@ def execute_code(request: CodeExecutionRequest) -> CodeExecutionResponse:
             executor_used=ExecutorType.SUBPROCESS.value,
             error_message=result.error_message,
             error_type=result.error_type
+        )
+    
+    else:  # REMOTE
+        return execute_in_sandbox(
+            code_content=request.code_content,
+            context=request.context,
+            timeout_seconds=request.timeout_seconds or 30
         )
 
 

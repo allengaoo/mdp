@@ -45,6 +45,14 @@ class Settings(BaseSettings):
     ollama_timeout: int = 120  # 本地 LLM 响应可能较慢
     ollama_temperature: float = 0.1  # 低温度确保输出稳定
     
+    # ==========================================
+    # Sandbox Configuration (Code Execution)
+    # ==========================================
+    sandbox_url: str = "http://mdp-sandbox:8001"  # K8s service URL
+    sandbox_enabled: bool = True  # Enable remote sandbox execution
+    sandbox_timeout: int = 30  # Default timeout for sandbox execution
+    default_executor: str = "auto"  # auto, builtin, subprocess, remote
+    
     class Config:
         # Make .env file optional - only load if it exists
         env_file = ".env"

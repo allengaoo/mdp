@@ -1626,7 +1626,7 @@ def list_projects_with_stats(session: Session, skip: int = 0, limit: int = 100) 
             "object_count": object_count,
             "link_count": link_count,
             "created_at": project.created_at,
-            "updated_at": project.updated_at,
+            "updated_at": getattr(project, 'updated_at', project.created_at),
         })
     
     return result

@@ -184,9 +184,9 @@ test.describe('Workflow: Function Development', () => {
     if (await runButton.count() > 0) {
       console.log('Step 5: Run button found');
       
-      // 监听 API 请求
+      // 监听 API 请求 (V3 execute)
       const requestPromise = page.waitForRequest(
-        request => request.url().includes('/execute/'),
+        request => request.url().includes('/api/v3/execute/'),
         { timeout: 5000 }
       ).catch(() => null);
       

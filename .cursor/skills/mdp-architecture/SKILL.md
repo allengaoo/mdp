@@ -19,6 +19,7 @@ MDP（Metadata-Driven Platform）是一个多模态本体构建平台，是 CEC-
 | Triple Write 索引 | 同时写入 MySQL、Elasticsearch、ChromaDB 三存储 |
 | 混合搜索 | 支持全文搜索 + 向量搜索的混合检索 |
 | 图分析 | 基于链接关系的图扩展和最短路径分析 |
+| 代码执行沙箱 | 隔离的代码执行环境，支持 builtin、subprocess、remote 三种模式 |
 | Chat2App | 自然语言查询转 AMIS Schema 渲染 |
 
 ## 核心文档索引
@@ -40,6 +41,8 @@ MDP（Metadata-Driven Platform）是一个多模态本体构建平台，是 CEC-
 | 全文搜索 | Elasticsearch |
 | 向量存储 | ChromaDB |
 | LLM 服务 | Ollama |
+| 代码沙箱 | 独立 FastAPI 微服务 |
+| 容器编排 | Kubernetes |
 
 ## 服务端口
 
@@ -47,6 +50,7 @@ MDP（Metadata-Driven Platform）是一个多模态本体构建平台，是 CEC-
 |------|------|------|
 | 前端 (Vite) | 3000 | 用户访问入口，代理 /api 到后端 |
 | 后端 (FastAPI) | 8000 | API 服务 |
+| 沙箱 (Sandbox) | 8001 | 代码执行沙箱服务 |
 | Swagger UI | 8000/docs | API 文档 |
 
 ## 架构分层
@@ -70,6 +74,13 @@ MDP（Metadata-Driven Platform）是一个多模态本体构建平台，是 CEC-
 │ MySQL        │ Elasticsearch│ ChromaDB     │ Ollama            │
 │ 结构化数据    │ 全文搜索      │ 向量搜索      │ LLM 推理           │
 └──────────────┴──────────────┴──────────────┴───────────────────┘
+        │
+        ▼
+┌──────────────────────┐
+│  Sandbox 沙箱服务     │
+│  (K8s Pod / 端口 8001) │
+│  隔离代码执行环境      │
+└──────────────────────┘
 ```
 
 ## 数据库分层
@@ -112,10 +123,10 @@ Project (项目/场景)
 ```
 frontend/src/
 ├── api/                    # API 客户端
-│   ├── axios.ts           # V1 Axios 配置
+│   ├── axios.ts           # V1 Axios 配置 (baseURL: /api/v1)
 │   ├── ontology.ts        # V1 API (内部转发 V3)
 │   └── v3/                # V3 API 客户端
-│       ├── client.ts      # V3 axios 实例
+│       ├── client.ts      # V3 axios 实例 (baseURL: /api/v3)
 │       ├── connectors.ts  # 连接器和同步任务
 │       ├── ontology.ts    # 本体定义
 │       ├── objects.ts     # 对象统计
@@ -131,6 +142,8 @@ frontend/src/
 │   │   ├── ObjectTypeEditor.tsx
 │   │   ├── ObjectTypeWizard.tsx
 │   │   ├── LinkTypeList.tsx
+│   │   ├── FunctionList.tsx
+│   │   ├── FunctionEditor.tsx
 │   │   ├── TopologyView.tsx
 │   │   └── ...
 │   ├── OMA/               # 对象管理
@@ -139,14 +152,14 @@ frontend/src/
 │   │   └── ...
 │   ├── Explorer/          # 数据探索
 │   │   ├── GlobalSearchPage.tsx
-│   │   ├── Chat2AppPage.tsx
-│   │   ├── Object360Page.tsx
-│   │   ├── GraphAnalysisPage.tsx
+│   │   ├── Chat2App/
+│   │   ├── Object360/
+│   │   ├── GraphAnalysis/
 │   │   └── ...
 │   └── DataLink/          # 数据连接
 │       ├── ConnectorList.tsx
 │       ├── ConnectorDetail.tsx
-│       ├── IndexHealthPage.tsx
+│       ├── IndexHealth/
 │       └── MultimodalMapping/
 └── layouts/               # 布局组件
 ```
@@ -163,6 +176,7 @@ backend/app/
 │       ├── ontology.py   # 本体定义
 │       ├── connectors.py # 连接器和同步
 │       ├── mapping.py    # 映射管理
+│       ├── execute.py    # 代码执行 (支持 remote)
 │       ├── projects.py   # 项目管理
 │       ├── search.py     # 搜索服务
 │       ├── graph.py      # 图分析
@@ -170,6 +184,7 @@ backend/app/
 │       └── health.py     # 健康监控
 ├── engine/               # 业务逻辑引擎
 │   ├── meta_crud.py      # 元数据 CRUD (兼容层)
+│   ├── code_executor.py  # 代码执行调度器 (builtin/subprocess/remote)
 │   ├── v3/               # V3 CRUD 操作
 │   │   ├── ontology_crud.py
 │   │   ├── connector_crud.py
@@ -187,12 +202,46 @@ backend/app/
 │   ├── meta.py           # 旧架构兼容
 │   └── ...
 ├── core/                 # 核心配置
-│   ├── config.py         # 配置管理
+│   ├── config.py         # 配置管理 (含 sandbox 配置)
 │   ├── db.py             # 数据库连接
 │   ├── vector_store.py   # ChromaDB
 │   └── elastic_store.py  # Elasticsearch
-└── services/             # 服务层
+├── services/             # 服务层
+│   ├── search_service.py
+│   ├── graph_service.py
+│   └── chat_agent.py
+└── sandbox/              # 沙箱服务 (独立部署)
+    ├── main.py           # FastAPI 沙箱服务
+    ├── Dockerfile
+    └── requirements.txt
 ```
+
+## 代码执行架构
+
+MDP 支持三种代码执行模式：
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     code_executor.py                             │
+│                     (代码执行调度器)                              │
+├─────────────────┬─────────────────┬─────────────────────────────┤
+│   BUILTIN       │   SUBPROCESS    │        REMOTE               │
+│   内置执行器     │   子进程执行器   │        远程沙箱              │
+│                 │                 │                             │
+│ function_runner │ subprocess_runner│    httpx -> Sandbox        │
+│     .py         │     .py         │    (K8s Pod:8001)          │
+│                 │                 │                             │
+│ 快速、可访问DB   │ 隔离、支持超时   │    安全隔离、资源限制        │
+└─────────────────┴─────────────────┴─────────────────────────────┘
+```
+
+### 执行模式选择逻辑 (auto)
+
+1. 检测代码中的 import 语句
+2. 如果使用 numpy/pandas 等 → subprocess
+3. 如果使用数据库 API 且有 session → builtin
+4. 其他情况 → builtin（更快）
+5. 显式指定 remote → 调用 K8s Sandbox 服务
 
 ## 关键业务流程
 
@@ -220,6 +269,15 @@ backend/app/
 用户输入 → Elasticsearch 全文搜索 + ChromaDB 向量搜索 → 结果融合 → 返回
 ```
 
+### 流程 5：代码执行
+
+```
+前端提交代码 → POST /api/v3/execute/code/test → code_executor 调度 →
+  ├── builtin: 进程内执行
+  ├── subprocess: 子进程隔离执行
+  └── remote: HTTP 调用 K8s Sandbox Pod
+```
+
 ## 快速定位
 
 ### 常见功能定位
@@ -233,11 +291,13 @@ backend/app/
 | 对象类型列表 | Studio/ObjectTypeList.tsx | v3/ontology.py | v3/ontology_crud.py |
 | 对象类型创建 | Studio/ObjectTypeWizard.tsx | v1/ontology.py | meta_crud.py |
 | 对象类型编辑 | Studio/ObjectTypeEditor.tsx | v1/ontology.py | meta_crud.py |
+| 函数编辑 | Studio/FunctionEditor.tsx | v3/execute.py | code_executor.py |
+| 代码执行测试 | Studio/FunctionEditor.tsx | v3/execute.py | code_executor.py |
 | 对象中心 | OMA/ObjectCenter.tsx | v3/ontology.py | v3/ontology_crud.py |
 | 全局搜索 | Explorer/GlobalSearchPage.tsx | v3/search.py | es_indexer.py |
-| 图分析 | Explorer/GraphAnalysisPage.tsx | v3/graph.py | - |
+| 图分析 | Explorer/GraphAnalysis/ | v3/graph.py | - |
 | 映射编辑 | DataLink/MultimodalMapping/ | v3/mapping.py | v3/mapping_crud.py |
-| 索引健康 | DataLink/IndexHealthPage.tsx | v3/health.py | indexing_worker.py |
+| 索引健康 | DataLink/IndexHealth/ | v3/health.py | indexing_worker.py |
 
 ### API 端点速查
 
@@ -253,9 +313,32 @@ backend/app/
 | 项目管理 | /api/v3/projects |
 | 全局搜索 | POST /api/v3/search/objects |
 | 图分析 | POST /api/v3/graph/expand |
+| 代码测试 | POST /api/v3/execute/code/test |
+| 函数执行 | POST /api/v3/execute/function/{function_id}/test |
+
+## Kubernetes 部署
+
+### Pod 清单
+
+| Pod | 端口 | 说明 |
+|-----|------|------|
+| mdp-backend | 8000 | 后端 API 服务 |
+| mdp-frontend | 80 | 前端静态服务 |
+| mdp-sandbox | 8001 | 代码执行沙箱 |
+| mysql | 3306 | MySQL 数据库 |
+| elasticsearch | 9200 | 全文搜索 |
+| milvus/chromadb | - | 向量存储 |
+
+### 配置文件
+
+```
+k8s/
+└── sandbox-deployment.yaml   # Sandbox Deployment + Service
+```
 
 ## 详细参考
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) - 详细架构和数据模型
 - [BUSINESS-FLOWS.md](BUSINESS-FLOWS.md) - 业务流程和调用链
 - [API-REFERENCE.md](API-REFERENCE.md) - API 端点参考
+- [ONTOLOGY_CONCEPTS.md](ONTOLOGY_CONCEPTS.md) - 本体核心概念

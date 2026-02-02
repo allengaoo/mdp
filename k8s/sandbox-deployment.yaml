@@ -1,0 +1,86 @@
+# MDP Sandbox Service - Kubernetes Deployment
+# Provides isolated code execution environment
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mdp-sandbox
+  namespace: mdp
+  labels:
+    app: mdp-sandbox
+    component: execution
+    tier: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mdp-sandbox
+  template:
+    metadata:
+      labels:
+        app: mdp-sandbox
+        component: execution
+    spec:
+      containers:
+      - name: sandbox
+        image: mdp-sandbox:v1
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8001
+          name: http
+          protocol: TCP
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: PYTHONIOENCODING
+          value: "utf-8"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8001
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8001
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mdp-sandbox
+  namespace: mdp
+  labels:
+    app: mdp-sandbox
+spec:
+  type: ClusterIP
+  selector:
+    app: mdp-sandbox
+  ports:
+  - name: http
+    port: 8001
+    targetPort: 8001
+    protocol: TCP

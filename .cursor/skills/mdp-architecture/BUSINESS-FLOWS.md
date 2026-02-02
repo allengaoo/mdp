@@ -132,3 +132,98 @@ sequenceDiagram
     Store-->>API: Combined Results
     API-->>UI: JSON Response
 ```
+
+## 5. Code Execution
+
+### 5.1 Code Test Flow (Auto Selection)
+
+**Scenario**: User tests function code in FunctionEditor.
+
+```mermaid
+sequenceDiagram
+    participant UI as FunctionEditor (Frontend)
+    participant API as v3/execute.py (Backend API)
+    participant Executor as code_executor.py (Engine)
+    participant Builtin as function_runner.py
+    participant Subprocess as subprocess_runner.py
+
+    UI->>API: POST /api/v3/execute/code/test
+    Note right of UI: {code_content, context, executor_type: "auto"}
+    
+    API->>Executor: execute_code(request)
+    
+    rect rgb(255, 245, 238)
+        note right of Executor: Auto Selection Logic
+        Executor->>Executor: detect_imports(code)
+        Executor->>Executor: detect_database_api_usage(code)
+        Executor->>Executor: choose_executor()
+    end
+    
+    alt Uses numpy/pandas
+        Executor->>Subprocess: execute_in_subprocess()
+        Subprocess-->>Executor: SubprocessResult
+    else Simple code / DB access
+        Executor->>Builtin: execute_code_direct()
+        Builtin-->>Executor: ExecutionResult
+    end
+    
+    Executor-->>API: CodeExecutionResponse
+    API-->>UI: JSON Response
+```
+
+### 5.2 Remote Sandbox Execution
+
+**Scenario**: User explicitly requests remote execution for security isolation.
+
+```mermaid
+sequenceDiagram
+    participant UI as FunctionEditor (Frontend)
+    participant API as v3/execute.py (Backend API)
+    participant Executor as code_executor.py (Engine)
+    participant Sandbox as mdp-sandbox (K8s Pod:8001)
+
+    UI->>API: POST /api/v3/execute/code/test
+    Note right of UI: {code_content, context, executor_type: "remote"}
+    
+    API->>Executor: execute_code(request)
+    Executor->>Executor: executor_type == REMOTE
+    
+    rect rgb(240, 255, 240)
+        note right of Executor: Remote Execution
+        Executor->>Sandbox: HTTP POST /execute
+        Note right of Sandbox: {code_content, context, timeout_seconds}
+        Sandbox->>Sandbox: subprocess.run(python -c wrapper_code)
+        Sandbox-->>Executor: JSON Response
+    end
+    
+    Executor-->>API: CodeExecutionResponse
+    API-->>UI: JSON Response
+```
+
+### 5.3 Sandbox Service Internal Flow
+
+**Scenario**: Inside the Sandbox Pod, how code is executed.
+
+```mermaid
+sequenceDiagram
+    participant Client as Backend (httpx)
+    participant API as sandbox/main.py
+    participant Wrapper as wrapper_code
+    participant UserCode as User's main()
+
+    Client->>API: POST /execute
+    API->>API: indent_code(user_code)
+    API->>API: Generate wrapper_code
+    
+    rect rgb(255, 250, 240)
+        note right of API: Subprocess Execution
+        API->>Wrapper: subprocess.run([python, -c, wrapper_code])
+        Wrapper->>Wrapper: Read context from stdin
+        Wrapper->>UserCode: Call main(context)
+        UserCode-->>Wrapper: Return result
+        Wrapper->>Wrapper: JSON output to stdout
+        Wrapper-->>API: Capture stdout/stderr
+    end
+    
+    API-->>Client: CodeExecuteResponse
+```

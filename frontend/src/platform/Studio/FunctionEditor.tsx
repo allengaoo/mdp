@@ -32,7 +32,7 @@ import {
   CodeOutlined,
 } from '@ant-design/icons';
 import { updateFunction } from '../../api/v3/logic';
-import apiClient from '../../api/axios';
+import v3Client from '../../api/v3/client';
 import { useParams } from 'react-router-dom';
 
 const { TextArea } = Input;
@@ -217,8 +217,8 @@ const FunctionEditor: React.FC<FunctionEditorProps> = ({
         },
       };
 
-      // 调用后端试运行 API
-      const response = await apiClient.post('/execute/code/test', {
+      // 调用后端试运行 API (V3)
+      const response = await v3Client.post('/execute/code/test', {
         code_content: codeContent,
         context: context,
         executor_type: 'auto',

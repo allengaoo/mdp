@@ -16,3 +16,6 @@ pandas>=2.0.0
 
 # Elasticsearch - Full Text Search
 elasticsearch>=8.0.0
+
+# HTTP Client (for sandbox remote execution)
+httpx>=0.24.0
